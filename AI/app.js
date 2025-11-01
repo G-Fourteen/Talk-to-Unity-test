@@ -1,4 +1,12 @@
 (() => {
+    if (typeof window !== 'undefined') {
+        window.addEventListener('error', (event) => {
+            if (event?.message) {
+                console.error('Talk to Unity runtime error:', event.message, event.error?.stack || '');
+            }
+        });
+    }
+
     const landingSection = document.getElementById('landing');
     const appRoot = document.getElementById('app-root');
     const heroStage = document.getElementById('hero-stage');
@@ -49,6 +57,7 @@
     const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
     let compatibilityBanner = null;
     let dependencyState = { results: [], allMet: false, missing: [] };
+    let unmuteInProgress = false;
 
     const dependencyChecks = [
         {
@@ -415,12 +424,12 @@
         }
 
         applyTheme(currentTheme);
+        setupSpeechRecognition();
 
         if (!systemPromptLoaded) {
             await loadSystemPrompt();
         }
 
-        setupSpeechRecognition();
         updateMuteIndicator();
 
         if (auto) {
@@ -459,16 +468,17 @@
                 if (announce) {
                     speak('Microphone muted.');
                 }
-            } else {
-                setCircleState(userCircle, {
-                    listening: true,
-                    label: 'Listening for your voice'
-                });
-                if (announce) {
-                    speak('Microphone unmuted.');
-                }
+                return true;
             }
-            return;
+
+            setCircleState(userCircle, {
+                listening: true,
+                label: 'Listening for your voice'
+            });
+            if (announce) {
+                speak('Microphone unmuted.');
+            }
+            return true;
         }
 
         if (muted) {
@@ -493,7 +503,7 @@
                 speak('Microphone muted.');
             }
 
-            return;
+            return true;
         }
 
         if (!hasMicPermission) {
@@ -503,7 +513,7 @@
                 if (announce) {
                     speak('Microphone permission is required to unmute.');
                 }
-                return;
+                return false;
             }
         }
 
@@ -517,7 +527,7 @@
             if (announce) {
                 speak('Microphone is already listening.');
             }
-            return;
+            return true;
         }
 
         isMuted = false;
@@ -541,12 +551,14 @@
             if (announce) {
                 speak('Unable to start microphone recognition.');
             }
-            return;
+            return false;
         }
 
         if (announce) {
             speak('Microphone unmuted.');
         }
+
+        return true;
     }
 
     function applyTheme(theme, { announce = false, force = false } = {}) {
@@ -611,15 +623,24 @@
             return;
         }
 
-        try {
-            const response = await fetch(resolveAssetPath('ai-instruct.txt'));
-            systemPrompt = await response.text();
-        } catch (error) {
-            console.error('Error fetching system prompt:', error);
-            systemPrompt = 'You are Unity, a helpful AI assistant.';
-        } finally {
-            systemPromptLoaded = true;
+        const candidatePaths = ['../ai-instruct.txt', 'ai-instruct.txt'];
+        for (const path of candidatePaths) {
+            try {
+                const response = await fetch(resolveAssetPath(path));
+                if (!response.ok) {
+                    continue;
+                }
+
+                systemPrompt = await response.text();
+                systemPromptLoaded = true;
+                return;
+            } catch (error) {
+                console.error('Error fetching system prompt from', path, error);
+            }
         }
+
+        systemPrompt = 'You are Unity, a helpful AI assistant.';
+        systemPromptLoaded = true;
     }
 
     function setupSpeechRecognition() {
@@ -743,6 +764,14 @@
                 label: `Microphone error: ${event.error}`
             });
         };
+
+        if (!isMuted) {
+            try {
+                recognition.start();
+            } catch (error) {
+                console.error('Failed to start recognition after initialization:', error);
+            }
+        }
     }
 
     async function initializeVoiceControl() {
@@ -845,33 +874,64 @@
         }
     }
 
-    async function attemptUnmute() {
-        await setMutedState(false);
+    function showMicrophonePermissionRequest() {
+        if (!muteIndicator) {
+            return;
+        }
+
+        muteIndicator.dataset.state = 'pending';
+        muteIndicator.setAttribute('aria-label', 'Requesting microphone permission…');
+        if (indicatorText) {
+            indicatorText.textContent = 'Requesting microphone permission…';
+        }
+    }
+
+    async function attemptUnmute({ announce = false } = {}) {
+        if (unmuteInProgress) {
+            return;
+        }
+
+        const shouldShowProgress = isMuted && !hasMicPermission;
+        if (shouldShowProgress) {
+            showMicrophonePermissionRequest();
+        }
+
+        unmuteInProgress = true;
+        try {
+            await setMutedState(false, { announce });
+        } finally {
+            unmuteInProgress = false;
+            updateMuteIndicator();
+        }
     }
 
     function handleMuteToggle(event) {
         event?.stopPropagation();
 
         if (isMuted) {
-            attemptUnmute();
+            void attemptUnmute();
             return;
         }
 
-        setMutedState(true);
+        void setMutedState(true);
     }
 
     muteIndicator?.addEventListener('click', handleMuteToggle);
 
-    document.addEventListener('click', () => {
-        if (isMuted) {
-            attemptUnmute();
+    const handleAmbientUnmute = () => {
+        if (!isMuted || unmuteInProgress) {
+            return;
         }
-    });
+
+        void attemptUnmute();
+    };
+
+    document.addEventListener('click', handleAmbientUnmute);
 
     document.addEventListener('keydown', (event) => {
-        if ((event.key === 'Enter' || event.key === ' ') && isMuted) {
+        if ((event.key === 'Enter' || event.key === ' ') && isMuted && !unmuteInProgress) {
             event.preventDefault();
-            attemptUnmute();
+            void attemptUnmute();
         }
     });
 
@@ -929,12 +989,8 @@
             .replace(/\ \[^]]*\bcommand\b[^]]*\]/gi, ' ')
             .replace(/\([^)]*\bcommand\b[^)]*\)/gi, ' ')
             .replace(/<[^>]*\bcommand\b[^>]*>/gi, ' ')
-            .replace(/\bcommands?\s*[:=-]\s*[a-z0-9_,
-\s-]+
-/gi, ' ')
-            .replace(/\bactions?\s*[:=-]\s*[a-z0-9_,
-\s-]+
-/gi, ' ')
+            .replace(/\bcommands?\s*[:=-]\s*[a-z0-9_,\s-]+/gi, ' ')
+            .replace(/\bactions?\s*[:=-]\s*[a-z0-9_,\s-]+/gi, ' ')
             .replace(/\b(?:execute|run)\s+command\s*(?:[:=-]\s*)?[a-z0-9_-]*/gi, ' ')
             .replace(/\bcommand\s*(?:[:=-]\s*|\s+)(?:[a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)?/gi, ' ');
 
@@ -1173,7 +1229,7 @@
     }
 
     function escapeRegExp(value) {
-        return value.replace(/[-/\\^$*+?.()|[\{\}]/g, '\\$&');
+        return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
     }
 
     function removeImageReferences(text, imageUrl) {
@@ -1756,5 +1812,14 @@
 
         window.open(imageUrl, '_blank');
         speak('Image opened in new tab.');
+    }
+
+    if (typeof window !== 'undefined') {
+        Object.assign(window, {
+            applyTheme,
+            setMutedState,
+            startApplication,
+            attemptUnmute
+        });
     }
 })();
