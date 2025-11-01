@@ -11,91 +11,16 @@
     <script defer src="./app.js"></script>
     <!-- endbuild js -->
 </head>
-<body class="no-js" data-app-state="landing">
+
+<body class="no-js">
     <noscript>
         <div class="no-js-banner" role="alert">
             <strong>JavaScript is disabled.</strong>
             The live Unity assistant requires JavaScript, so the static preview is shown instead.
         </div>
     </noscript>
-    <section id="landing" class="landing" aria-labelledby="landing-title">
-        <header class="landing-hero">
-            <div class="landing-badge">Unity AI Lab</div>
-            <h1 id="landing-title">Unity Voice Lab Deployment Checklist</h1>
-            <p class="landing-lede">
-                Follow these steps to make sure your browser has every capability the Unity Voice Lab
-                experience needs. Once you see the green light, the “Launch the Voice Lab” button will open the
-                full application.
-            </p>
-            <a class="landing-link" href="https://unityailab.online" target="_blank" rel="noopener">
-                Visit unityailab.online
-            </a>
-        </header>
-        <section class="landing-body" aria-labelledby="dependency-title">
-            <div class="dependency-summary">
-                <span class="dependency-light" data-role="dependency-light" data-state="pending" aria-hidden="true"></span>
-                <div>
-                    <h2 id="dependency-title">Do I have the dependencies?</h2>
-                    <p id="dependency-summary">
-                        We’ll run a quick system check to confirm your browser, connection, and microphone are ready.
-                    </p>
-                </div>
-            </div>
-            <ul class="dependency-list" id="dependency-list">
-                <li class="dependency-item" data-dependency="secure-context">
-                    <div class="dependency-header">
-                        <span class="dependency-name">Secure context (HTTPS or localhost)</span>
-                        <span class="dependency-status" aria-live="polite">Checking…</span>
-                    </div>
-                    <p class="dependency-instructions">
-                        The microphone and speech tools only unlock when the site is served over HTTPS or from
-                        <code>localhost</code>. If you’re running a static export, publish it on GitHub Pages or any
-                        HTTPS host. For local development run <code>python -m http.server</code> and open
-                        <code>https://localhost</code> using a self-signed certificate.
-                    </p>
-                </li>
-                <li class="dependency-item" data-dependency="speech-recognition">
-                    <div class="dependency-header">
-                        <span class="dependency-name">Web Speech Recognition API</span>
-                        <span class="dependency-status" aria-live="polite">Checking…</span>
-                    </div>
-                    <p class="dependency-instructions">
-                        Unity listens to your commands using the browser’s speech recognition engine. Install the
-                        latest Chrome, Edge, or Brave on desktop. Safari users must enable
-                        <strong>Develop &gt; Experimental Features &gt; Web Speech API</strong> and reload the page. This
-                        API is not available on Firefox yet.
-                    </p>
-                </li>
-                <li class="dependency-item" data-dependency="speech-synthesis">
-                    <div class="dependency-header">
-                        <span class="dependency-name">Speech synthesis voices</span>
-                        <span class="dependency-status" aria-live="polite">Checking…</span>
-                    </div>
-                    <p class="dependency-instructions">
-                        The assistant answers aloud using the Web Speech synthesis engine. Confirm your browser has
-                        system voices installed (they ship with Windows, macOS, iOS, and Android). Linux users should
-                        install the <code>speech-dispatcher</code> package and restart the browser so voices can load.
-                    </p>
-                </li>
-                <li class="dependency-item" data-dependency="microphone">
-                    <div class="dependency-header">
-                        <span class="dependency-name">Microphone access</span>
-                        <span class="dependency-status" aria-live="polite">Checking…</span>
-                    </div>
-                    <p class="dependency-instructions">
-                        Plug in a microphone or use your built-in mic, then grant access when prompted. If you blocked
-                        the mic before, click the lock icon in your browser’s address bar and allow the microphone.
-                        Restart the page afterwards so the permission change takes effect.
-                    </p>
-                </li>
-            </ul>
-            <div class="landing-actions">
-                <button id="launch-app" class="primary" type="button" disabled>Launch the Voice Lab</button>
-                <button id="recheck-dependencies" class="ghost" type="button">Re-run dependency check</button>
-            </div>
-        </section>
-    </section>
-    <div id="app-root" class="app-shell" hidden>
+
+    <div class="app-shell">
         <header class="status-banner" role="status" aria-live="polite">
             <button id="mute-indicator" class="mute-indicator" data-state="muted" type="button">
                 <span class="indicator-text">Tap or click anywhere to unmute</span>

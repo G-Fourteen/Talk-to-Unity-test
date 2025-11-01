@@ -23,6 +23,12 @@ if (bodyElement) {
     bodyElement.classList.add('js-enabled');
 }
 
+const bodyElement = document.body;
+if (bodyElement) {
+    bodyElement.classList.remove('no-js');
+    bodyElement.classList.add('js-enabled');
+}
+
 let currentImageModel = 'flux';
 let chatHistory = [];
 let systemPrompt = '';
@@ -33,8 +39,6 @@ let currentHeroUrl = '';
 let pendingHeroUrl = '';
 let currentTheme = 'dark';
 let recognitionRestartTimeout = null;
-let appStarted = false;
-
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
 
