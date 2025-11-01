@@ -1,156 +1,354 @@
-const bodyElement = document.body;
-if (bodyElement) {
-    bodyElement.classList.remove('no-js');
-    bodyElement.classList.add('js-enabled');
-    if (!bodyElement.dataset.appState) {
-        bodyElement.dataset.appState = 'landing';
-    }
-}
+(() => {
+    const dependencyLight = document.querySelector('[data-role="dependency-light"]');
+    const dependencySummary = document.getElementById('dependency-summary');
+    const dependencyList = document.getElementById('dependency-list');
+    const launchButton = document.getElementById('launch-app');
+    const recheckButton = document.getElementById('recheck-dependencies');
+    const statusMessage = document.getElementById('status-message');
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
 
-const dependencyLight = document.querySelector('[data-role="dependency-light"]');
-const dependencySummary = document.getElementById('dependency-summary');
-const dependencyList = document.getElementById('dependency-list');
-const launchButton = document.getElementById('launch-app');
-const recheckButton = document.getElementById('recheck-dependencies');
-const statusMessage = document.getElementById('status-message');
+    const LOOPBACK_HOST_PATTERN = /^(?:localhost|127(?:\.\d{1,3}){3}|::1|\[::1\])$/;
 
-const dependencyChecks = [
-    {
-        id: 'secure-context',
-        label: 'Secure connection (HTTPS or localhost)',
-        friendlyName: 'secure connection light',
-        check: () =>
-            Boolean(window.isSecureContext) ||
-            /^localhost$|^127(?:\.\d{1,3}){3}$|^\[::1\]$/.test(window.location.hostname)
-    },
-    {
-        id: 'speech-recognition',
-        label: 'Web Speech Recognition API',
-        friendlyName: 'speech listening light',
-        check: () => Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
-    },
-    {
-        id: 'speech-synthesis',
-        label: 'Speech synthesis voices',
-        friendlyName: 'talk-back voice light',
-        check: () => typeof window.speechSynthesis !== 'undefined' && typeof window.speechSynthesis.speak === 'function'
-    },
-    {
-        id: 'microphone',
-        label: 'Microphone access',
-        friendlyName: 'microphone light',
-        check: () => Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
-    }
-];
+    const dependencyChecks = [
+        {
+            id: 'secure-context',
+            label: 'Secure connection (HTTPS or localhost)',
+            friendlyName: 'secure connection light',
+            check: () =>
+                Boolean(window.isSecureContext) || LOOPBACK_HOST_PATTERN.test(window.location.hostname)
+        },
+        {
+            id: 'speech-recognition',
+            label: 'Web Speech Recognition API',
+            friendlyName: 'speech listening light',
+            check: () => Boolean(SpeechRecognition)
+        },
+        {
+            id: 'speech-synthesis',
+            label: 'Speech synthesis voices',
+            friendlyName: 'talk-back voice light',
+            check: () => typeof synth !== 'undefined' && typeof synth.speak === 'function'
+        },
+        {
+            id: 'microphone',
+            label: 'Microphone access',
+            friendlyName: 'microphone light',
+            check: () => Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+        }
+    ];
 
-function evaluateDependencies({ announce = false } = {}) {
-    const results = dependencyChecks.map((descriptor) => {
-        let met = false;
-        try {
-            met = Boolean(descriptor.check());
-        } catch (error) {
-            console.error(`Dependency check failed for ${descriptor.id}:`, error);
+    let landingInitialized = false;
+
+    function formatDependencyList(items) {
+        const labels = items
+            .map((item) => item.friendlyName ?? item.label ?? item.id)
+            .filter(Boolean);
+
+        if (labels.length === 0) {
+            return '';
         }
 
-        return {
-            ...descriptor,
-            met
-        };
-    });
-
-    const allMet = results.every((result) => result.met);
-    updateDependencyUI(results, allMet, { announce });
-
-    if (launchButton) {
-        launchButton.disabled = !allMet;
-        launchButton.setAttribute('aria-disabled', String(!allMet));
-    }
-
-    return { results, allMet };
-}
-
-function updateDependencyUI(results, allMet, { announce = false } = {}) {
-    if (dependencyList) {
-        results.forEach((result) => {
-            const item = dependencyList.querySelector(`[data-dependency="${result.id}"]`);
-            if (!item) {
-                return;
-            }
-
-            item.dataset.state = result.met ? 'pass' : 'fail';
-            const statusElement = item.querySelector('.dependency-status');
-            if (statusElement) {
-                statusElement.textContent = result.met ? 'Ready' : 'Action required';
-            }
-        });
-    }
-
-    if (dependencyLight) {
-        dependencyLight.dataset.state = allMet ? 'pass' : 'fail';
-        dependencyLight.setAttribute(
-            'aria-label',
-            allMet ? 'All dependencies satisfied' : 'One or more dependencies are missing'
-        );
-    }
-
-    if (dependencySummary) {
-        const unmet = results.filter((result) => !result.met);
-        if (unmet.length === 0) {
-            dependencySummary.textContent =
-                'All the lights are green! Press "Launch Unity Voice Lab" to start chatting.';
-        } else {
-            const firstMissing = unmet[0];
-            const friendlyName = firstMissing?.friendlyName ?? firstMissing?.label ?? 'missing light';
-            dependencySummary.textContent = `The ${friendlyName} is still red. Follow the tip below, then press "Check again."`;
+        if (labels.length === 1) {
+            return labels[0];
         }
+
+        const head = labels.slice(0, -1).join(', ');
+        const tail = labels[labels.length - 1];
+        return `${head} and ${tail}`;
     }
 
-    if (announce && !allMet) {
-        const missingNames = results
-            .filter((result) => !result.met)
-            .map((result) => result.friendlyName ?? result.label)
-            .join(', ');
-
-        if (statusMessage) {
-            statusMessage.textContent = missingNames
-                ? `Still missing: ${missingNames}. Work through the tips below and try again.`
-                : 'One or more requirements are still missing. Please review the tips and try again.';
+    function getDependencyStatuses(item) {
+        if (!item) {
+            return {
+                passStatus: 'Ready',
+                failStatus: 'Check settings'
+            };
         }
-    } else if (statusMessage) {
-        statusMessage.textContent = '';
-    }
-}
 
-function redirectToExperience() {
-    const targetUrl = new URL('./AI/', window.location.href);
-    window.location.assign(targetUrl.toString());
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    const params = new URLSearchParams(window.location.search);
-    const redirected = params.get('missing');
-    if (redirected && statusMessage) {
-        statusMessage.textContent =
-            'We redirected you back here because one or more requirements were missing. Review the tips below and run the check again.';
-        window.history.replaceState({}, document.title, window.location.pathname);
+        const { passStatus = 'Ready', failStatus = 'Check settings' } = item.dataset;
+        return { passStatus, failStatus };
     }
 
-    evaluateDependencies();
-
-    launchButton?.addEventListener('click', () => {
-        const { allMet } = evaluateDependencies({ announce: true });
-        if (!allMet) {
+    function setStatusMessage(message, tone = 'info') {
+        if (!statusMessage) {
             return;
         }
 
-        redirectToExperience();
-    });
+        statusMessage.textContent = message;
+        if (message) {
+            statusMessage.dataset.tone = tone;
+        } else {
+            delete statusMessage.dataset.tone;
+        }
+    }
 
-    recheckButton?.addEventListener('click', () => {
+    function updateLaunchButtonState({ allMet, missing }) {
+        if (!launchButton) {
+            return;
+        }
+
+        launchButton.disabled = false;
+        launchButton.setAttribute('aria-disabled', 'false');
+        launchButton.dataset.state = allMet ? 'ready' : 'warn';
+
+        if (missing.length > 0) {
+            const summary = formatDependencyList(missing);
+            launchButton.title = `Talk to Unity with limited support: ${summary}`;
+        } else {
+            launchButton.removeAttribute('title');
+        }
+    }
+
+    function showRecheckInProgress() {
+        if (launchButton) {
+            launchButton.disabled = true;
+            launchButton.setAttribute('aria-disabled', 'true');
+            launchButton.dataset.state = 'pending';
+        }
+
+        if (dependencyLight) {
+            dependencyLight.dataset.state = 'pending';
+            dependencyLight.setAttribute('aria-label', 'Re-checking requirements');
+        }
+
+        if (dependencySummary) {
+            dependencySummary.textContent = 'Re-checking your setup…';
+        }
+
+        if (dependencyList) {
+            dependencyList.querySelectorAll('.dependency-item').forEach((item) => {
+                item.dataset.state = 'pending';
+                const statusElement = item.querySelector('.dependency-status');
+                if (statusElement) {
+                    statusElement.textContent = 'Checking…';
+                }
+            });
+        }
+
+        setStatusMessage('Running the readiness scan again…', 'info');
+    }
+
+    function handleLaunchButtonClick() {
+        const result = evaluateDependencies({ announce: true });
+        if (!result) {
+            return;
+        }
+
+        const { allMet, missing, results } = result;
+
+        window.dispatchEvent(
+            new CustomEvent('talk-to-unity:launch', {
+                detail: { allMet, missing, results }
+            })
+        );
+    }
+
+    function handleRecheckClick() {
+        showRecheckInProgress();
         evaluateDependencies({ announce: true });
-    });
-});
+    }
 
-window.addEventListener('focus', () => {
-    evaluateDependencies();
-});
+    function bootstrapLandingExperience() {
+        if (landingInitialized) {
+            return;
+        }
+
+        landingInitialized = true;
+
+        evaluateDependencies();
+
+        launchButton?.addEventListener('click', handleLaunchButtonClick);
+        recheckButton?.addEventListener('click', handleRecheckClick);
+    }
+
+    document.addEventListener('DOMContentLoaded', bootstrapLandingExperience);
+
+    if (document.readyState !== 'loading') {
+        bootstrapLandingExperience();
+    }
+
+    function ensureTrailingSlash(value) {
+        if (typeof value !== 'string' || !value) {
+            return '';
+        }
+        return value.endsWith('/') ? value : `${value}/`;
+    }
+
+    function resolveAppLaunchUrl() {
+        const configuredBase =
+            typeof window.__talkToUnityAssetBase === 'string' && window.__talkToUnityAssetBase
+                ? window.__talkToUnityAssetBase
+                : '';
+
+        let base = ensureTrailingSlash(configuredBase);
+
+        if (!base) {
+            try {
+                base = ensureTrailingSlash(new URL('.', window.location.href).toString());
+            } catch (error) {
+                console.warn('Unable to determine Talk to Unity base path. Falling back to relative navigation.', error);
+                base = '';
+            }
+        }
+
+        try {
+            return new URL('AI/index.html', base || window.location.href).toString();
+        } catch (error) {
+            console.warn('Failed to resolve Talk to Unity application URL. Using a relative fallback.', error);
+            return 'AI/index.html';
+        }
+    }
+
+    function handleLaunchEvent(event) {
+        const detail = event?.detail ?? {};
+        const { allMet = false, missing = [] } = detail;
+
+        const summary = formatDependencyList(missing);
+        const tone = allMet ? 'success' : 'warning';
+        const launchMessage = allMet
+            ? 'All systems look good. Launching Talk to Unity…'
+            : summary
+            ? `Launching Talk to Unity. Some features may be limited until we resolve: ${summary}.`
+            : 'Launching Talk to Unity. Some features may be limited because certain capabilities are unavailable.';
+
+        setStatusMessage(launchMessage, tone);
+
+        document.cookie = 'checks-passed=true;path=/';
+
+        if (!allMet) {
+            dependencyLight?.setAttribute(
+                'aria-label',
+                summary
+                    ? `Launching with limited functionality while we address: ${summary}`
+                    : 'Launching with limited functionality while some requirements are addressed'
+            );
+        } else {
+            dependencyLight?.setAttribute('aria-label', 'All dependencies satisfied. Launching Talk to Unity');
+        }
+
+        if (launchButton) {
+            launchButton.disabled = true;
+            launchButton.setAttribute('aria-disabled', 'true');
+            launchButton.dataset.state = 'pending';
+        }
+
+        const appRoot = document.getElementById('app-root');
+        if (!appRoot) {
+            const launchUrl = resolveAppLaunchUrl();
+            if (launchUrl) {
+                window.location.assign(launchUrl);
+            }
+        }
+    }
+
+    window.addEventListener('talk-to-unity:launch', handleLaunchEvent);
+
+    window.addEventListener('focus', () => {
+        evaluateDependencies();
+    });
+
+    function evaluateDependencies({ announce = false } = {}) {
+        const results = dependencyChecks.map((descriptor) => {
+            let met = false;
+            try {
+                met = Boolean(descriptor.check());
+            } catch (error) {
+                console.error(`Dependency check failed for ${descriptor.id}:`, error);
+            }
+
+            return {
+                ...descriptor,
+                met
+            };
+        });
+
+        const missing = results.filter((result) => !result.met);
+        const allMet = missing.length === 0;
+
+        updateDependencyUI(results, allMet, { announce, missing });
+        updateLaunchButtonState({ allMet, missing });
+
+        if (announce) {
+            if (allMet) {
+                setStatusMessage('All systems look good. Launching Talk to Unity…', 'success');
+            } else {
+                const summary = formatDependencyList(missing);
+                const message = summary
+                    ? `Some browser features are unavailable: ${summary}. You can continue, but certain Unity abilities may be limited.`
+                    : 'Some browser features are unavailable. You can continue, but certain Unity abilities may be limited.';
+                setStatusMessage(message, 'warning');
+            }
+        } else if (allMet && statusMessage?.textContent) {
+            setStatusMessage('');
+        }
+
+        return { results, allMet, missing };
+    }
+
+    function updateDependencyUI(results, allMet, { announce = false, missing = [] } = {}) {
+        if (dependencyList) {
+            results.forEach((result) => {
+                const item = dependencyList.querySelector(`[data-dependency="${result.id}"]`);
+                if (!item) {
+                    return;
+                }
+
+                item.dataset.state = result.met ? 'pass' : 'fail';
+                const statusElement = item.querySelector('.dependency-status');
+                if (statusElement) {
+                    const { passStatus, failStatus } = getDependencyStatuses(item);
+                    statusElement.textContent = result.met ? passStatus : failStatus;
+                }
+            });
+        }
+
+        if (dependencyLight) {
+            dependencyLight.dataset.state = allMet ? 'pass' : 'fail';
+            const summary = formatDependencyList(missing);
+            dependencyLight.setAttribute(
+                'aria-label',
+                allMet
+                    ? 'All dependencies satisfied'
+                    : summary
+                    ? `Missing requirements: ${summary}`
+                    : 'Missing one or more requirements'
+            );
+        }
+
+        if (dependencySummary) {
+            if (missing.length === 0) {
+                dependencySummary.textContent = 'All the lights are green! Press "Talk to Unity" to start chatting.';
+            } else {
+                const summary = formatDependencyList(missing);
+                dependencySummary.textContent = summary
+                    ? `Alerts: ${summary}. You can still launch, but features may be limited until these items are resolved.`
+                    : 'Alerts detected. You can still launch, but features may be limited until the issues are resolved.';
+            }
+        }
+
+        if (!announce && !allMet) {
+            setStatusMessage('');
+        }
+    }
+
+    if (typeof window !== 'undefined') {
+        Object.defineProperty(window, '__unityLandingTestHooks', {
+            value: {
+                initialize: () => bootstrapLandingExperience(),
+                evaluateDependencies: (options) => evaluateDependencies(options),
+                markAllDependenciesReady: () => {
+                    const readyResults = dependencyChecks.map((descriptor) => ({ ...descriptor, met: true }));
+                    updateDependencyUI(readyResults, true, { announce: false, missing: [] });
+                    updateLaunchButtonState({ allMet: true, missing: [] });
+                    if (launchButton) {
+                        launchButton.disabled = false;
+                        launchButton.setAttribute('aria-disabled', 'false');
+                    }
+                }
+            },
+            configurable: true,
+            enumerable: false
+        });
+    }
+})();

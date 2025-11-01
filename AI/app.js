@@ -4,13 +4,6 @@ const heroStage = document.getElementById('hero-stage');
 const heroImage = document.getElementById('hero-image');
 const muteIndicator = document.getElementById('mute-indicator');
 const indicatorText = muteIndicator?.querySelector('.indicator-text') ?? null;
-const normalizedPath = (() => {
-    const pathname = window.location.pathname || '';
-    const withoutIndex = pathname.replace(/index\.html$/i, '');
-    const trimmed = withoutIndex.replace(/\/+$/, '');
-    return trimmed || '/';
-})();
-const isExperienceRoute = /\/(?:AI)$/i.test(normalizedPath);
 const aiCircle = document.querySelector('[data-role="ai"]');
 const userCircle = document.querySelector('[data-role="user"]');
 const dependencyLight = document.querySelector('[data-role="dependency-light"]');
@@ -18,17 +11,6 @@ const dependencySummary = document.getElementById('dependency-summary');
 const dependencyList = document.getElementById('dependency-list');
 const launchButton = document.getElementById('launch-app');
 const recheckButton = document.getElementById('recheck-dependencies');
-const redirectToLandingWithStatus = () => {
-    const landingUrl = new URL(window.location.href);
-    landingUrl.search = '';
-    landingUrl.hash = '';
-    landingUrl.pathname = landingUrl.pathname.replace(/AI\/?(?:index\.html)?$/i, '');
-    if (!landingUrl.pathname.endsWith('/')) {
-        landingUrl.pathname = `${landingUrl.pathname}/`;
-    }
-    landingUrl.searchParams.set('missing', '1');
-    window.location.replace(landingUrl.toString());
-};
 
 if (heroImage) {
     heroImage.setAttribute('crossorigin', 'anonymous');
@@ -39,9 +21,6 @@ const bodyElement = document.body;
 if (bodyElement) {
     bodyElement.classList.remove('no-js');
     bodyElement.classList.add('js-enabled');
-    if (!bodyElement.dataset.appState) {
-        bodyElement.dataset.appState = 'landing';
-    }
 }
 
 let currentImageModel = 'flux';
@@ -61,8 +40,7 @@ const synth = window.speechSynthesis;
 const dependencyChecks = [
     {
         id: 'secure-context',
-        label: 'Secure connection (HTTPS or localhost)',
-        friendlyName: 'secure connection light',
+        label: 'Secure context (HTTPS or localhost)',
         check: () =>
             Boolean(window.isSecureContext) ||
             /^localhost$|^127(?:\.\d{1,3}){3}$|^\[::1\]$/.test(window.location.hostname)
@@ -70,19 +48,16 @@ const dependencyChecks = [
     {
         id: 'speech-recognition',
         label: 'Web Speech Recognition API',
-        friendlyName: 'speech listening light',
         check: () => Boolean(SpeechRecognition)
     },
     {
         id: 'speech-synthesis',
         label: 'Speech synthesis voices',
-        friendlyName: 'talk-back voice light',
         check: () => typeof synth !== 'undefined' && typeof synth.speak === 'function'
     },
     {
         id: 'microphone',
         label: 'Microphone access',
-        friendlyName: 'microphone light',
         check: () => Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
     }
 ];
@@ -126,25 +101,11 @@ function resolveAssetPath(relativePath) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    const evaluation = evaluateDependencies();
+    evaluateDependencies();
 
-    if (isExperienceRoute) {
-        if (evaluation.allMet) {
-            startApplication();
-        } else {
-            redirectToLandingWithStatus();
-        }
-        return;
-    }
-
-    launchButton?.addEventListener('click', () => {
-        const { allMet } = evaluateDependencies({ announce: true });
-        if (!allMet) {
-            return;
-        }
-
-        const targetUrl = new URL('./AI/', window.location.href);
-        window.location.assign(targetUrl.toString());
+    launchButton?.addEventListener('click', async () => {
+        evaluateDependencies({ announce: true });
+        await startApplication();
     });
 
     recheckButton?.addEventListener('click', () => {
@@ -177,8 +138,8 @@ function evaluateDependencies({ announce = false } = {}) {
     updateDependencyUI(results, allMet, { announce });
 
     if (launchButton) {
-        launchButton.disabled = !allMet;
-        launchButton.setAttribute('aria-disabled', String(!allMet));
+        launchButton.disabled = false;
+        launchButton.setAttribute('aria-disabled', 'false');
     }
 
     return { results, allMet };
@@ -212,18 +173,22 @@ function updateDependencyUI(results, allMet, { announce = false } = {}) {
         const unmet = results.filter((result) => !result.met);
         if (unmet.length === 0) {
             dependencySummary.textContent =
-                'All the lights are green! Press "Launch Unity Voice Lab" to start chatting.';
+                'All systems are ready. Launch the Voice Lab to begin your Unity AI conversation.';
+        } else if (unmet.length === 1) {
+            const [missingCapability] = unmet;
+            dependencySummary.textContent =
+                `${missingCapability.label} is unavailable. You can launch now, but some features may be limited until it is resolved.`;
         } else {
-            const firstMissing = unmet[0];
-            const friendlyName = firstMissing?.friendlyName ?? firstMissing?.label ?? 'missing light';
-            dependencySummary.textContent = `The ${friendlyName} is still red. Follow the tip below, then press "Check again."`;
+            const missingLabels = unmet.map((result) => result.label).join(', ');
+            dependencySummary.textContent =
+                `Multiple capabilities are unavailable (${missingLabels}). You can launch now, but some features may be limited until they are resolved.`;
         }
     }
 
     if (announce && !allMet) {
         const missingNames = results
             .filter((result) => !result.met)
-            .map((result) => result.friendlyName ?? result.label)
+            .map((result) => result.label)
             .join(', ');
 
         if (missingNames) {
@@ -1377,6 +1342,12 @@ async function getAIResponse(userInput) {
             }
         }
 
+        return {
+            text: finalAssistantMessage,
+            rawText: aiText,
+            imageUrl: selectedImageUrl,
+            commands
+        };
     } catch (error) {
         console.error('Error getting text from Pollinations AI:', error);
         setCircleState(aiCircle, {
@@ -1390,6 +1361,8 @@ async function getAIResponse(userInput) {
                 label: 'Unity is idle'
             });
         }, 2400);
+
+        return { error };
     }
 }
 
@@ -1519,4 +1492,37 @@ function openImageInNewTab() {
 
     window.open(imageUrl, '_blank');
     speak('Image opened in new tab.');
+}
+
+if (!launchButton && !landingSection) {
+    startApplication().catch((error) => {
+        console.error('Failed to auto-start the Unity voice experience:', error);
+    });
+}
+
+if (typeof window !== 'undefined') {
+    const setMutedStateHandler = setMutedState;
+    window.setMutedState = (muted, options) => setMutedStateHandler(muted, options);
+
+    Object.defineProperty(window, '__unityTestHooks', {
+        value: {
+            isAppReady: () => appStarted,
+            getChatHistory: () => chatHistory.map((entry) => ({ ...entry })),
+            getCurrentHeroImage: () => getImageUrl(),
+            setHeroImage: (dataUrl) => updateHeroImage(dataUrl),
+            sendUserInput: async (input) => {
+                if (typeof input !== 'string' || !input.trim()) {
+                    return { error: new Error('Input must be a non-empty string.') };
+                }
+
+                if (!appStarted) {
+                    await startApplication();
+                }
+
+                return getAIResponse(input.trim());
+            }
+        },
+        configurable: true,
+        enumerable: false
+    });
 }
