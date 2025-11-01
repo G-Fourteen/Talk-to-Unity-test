@@ -1,9 +1,27 @@
+const landingSection = document.getElementById('landing');
+const appRoot = document.getElementById('app-root');
 const heroStage = document.getElementById('hero-stage');
 const heroImage = document.getElementById('hero-image');
 const muteIndicator = document.getElementById('mute-indicator');
 const indicatorText = muteIndicator?.querySelector('.indicator-text') ?? null;
 const aiCircle = document.querySelector('[data-role="ai"]');
 const userCircle = document.querySelector('[data-role="user"]');
+const dependencyLight = document.querySelector('[data-role="dependency-light"]');
+const dependencySummary = document.getElementById('dependency-summary');
+const dependencyList = document.getElementById('dependency-list');
+const launchButton = document.getElementById('launch-app');
+const recheckButton = document.getElementById('recheck-dependencies');
+
+if (heroImage) {
+    heroImage.setAttribute('crossorigin', 'anonymous');
+    heroImage.decoding = 'async';
+}
+
+const bodyElement = document.body;
+if (bodyElement) {
+    bodyElement.classList.remove('no-js');
+    bodyElement.classList.add('js-enabled');
+}
 
 const bodyElement = document.body;
 if (bodyElement) {
@@ -21,9 +39,33 @@ let currentHeroUrl = '';
 let pendingHeroUrl = '';
 let currentTheme = 'dark';
 let recognitionRestartTimeout = null;
-
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
+
+const dependencyChecks = [
+    {
+        id: 'secure-context',
+        label: 'Secure context (HTTPS or localhost)',
+        check: () =>
+            Boolean(window.isSecureContext) ||
+            /^localhost$|^127(?:\.\d{1,3}){3}$|^\[::1\]$/.test(window.location.hostname)
+    },
+    {
+        id: 'speech-recognition',
+        label: 'Web Speech Recognition API',
+        check: () => Boolean(SpeechRecognition)
+    },
+    {
+        id: 'speech-synthesis',
+        label: 'Speech synthesis voices',
+        check: () => typeof synth !== 'undefined' && typeof synth.speak === 'function'
+    },
+    {
+        id: 'microphone',
+        label: 'Microphone access',
+        check: () => Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+    }
+];
 
 if (heroStage && !heroStage.dataset.state) {
     heroStage.dataset.state = 'empty';
@@ -63,7 +105,121 @@ function resolveAssetPath(relativePath) {
     }
 }
 
-window.addEventListener('load', async () => {
+document.addEventListener('DOMContentLoaded', () => {
+    evaluateDependencies();
+
+    launchButton?.addEventListener('click', async () => {
+        const { allMet } = evaluateDependencies();
+        if (!allMet) {
+            return;
+        }
+
+        await startApplication();
+    });
+
+    recheckButton?.addEventListener('click', () => {
+        evaluateDependencies({ announce: true });
+    });
+});
+
+window.addEventListener('focus', () => {
+    if (!appStarted) {
+        evaluateDependencies();
+    }
+});
+
+function evaluateDependencies({ announce = false } = {}) {
+    const results = dependencyChecks.map((descriptor) => {
+        let met = false;
+        try {
+            met = Boolean(descriptor.check());
+        } catch (error) {
+            console.error(`Dependency check failed for ${descriptor.id}:`, error);
+        }
+
+        return {
+            ...descriptor,
+            met
+        };
+    });
+
+    const allMet = results.every((result) => result.met);
+    updateDependencyUI(results, allMet, { announce });
+
+    if (launchButton) {
+        launchButton.disabled = !allMet;
+        launchButton.setAttribute('aria-disabled', String(!allMet));
+    }
+
+    return { results, allMet };
+}
+
+function updateDependencyUI(results, allMet, { announce = false } = {}) {
+    if (dependencyList) {
+        results.forEach((result) => {
+            const item = dependencyList.querySelector(`[data-dependency="${result.id}"]`);
+            if (!item) {
+                return;
+            }
+
+            item.dataset.state = result.met ? 'pass' : 'fail';
+            const statusElement = item.querySelector('.dependency-status');
+            if (statusElement) {
+                statusElement.textContent = result.met ? 'Ready' : 'Action required';
+            }
+        });
+    }
+
+    if (dependencyLight) {
+        dependencyLight.dataset.state = allMet ? 'pass' : 'fail';
+        dependencyLight.setAttribute(
+            'aria-label',
+            allMet ? 'All dependencies satisfied' : 'One or more dependencies are missing'
+        );
+    }
+
+    if (dependencySummary) {
+        const unmet = results.filter((result) => !result.met);
+        if (unmet.length === 0) {
+            dependencySummary.textContent =
+                'All systems are ready. Launch the Voice Lab to begin your Unity AI conversation.';
+        } else {
+            const firstMissing = unmet[0]?.label ?? 'the required capabilities';
+            dependencySummary.textContent = `Resolve ${firstMissing} and re-run the check.`;
+        }
+    }
+
+    if (announce && !allMet) {
+        const missingNames = results
+            .filter((result) => !result.met)
+            .map((result) => result.label)
+            .join(', ');
+
+        if (missingNames) {
+            speak(`Missing dependencies: ${missingNames}`);
+        }
+    }
+}
+
+async function startApplication() {
+    if (appStarted) {
+        return;
+    }
+
+    appStarted = true;
+
+    if (appRoot?.hasAttribute('hidden')) {
+        appRoot.removeAttribute('hidden');
+    }
+
+    if (bodyElement) {
+        bodyElement.dataset.appState = 'experience';
+    }
+
+    if (landingSection) {
+        landingSection.setAttribute('aria-hidden', 'true');
+    }
+
     if (heroStage) {
         if (!heroStage.dataset.state) {
             heroStage.dataset.state = 'idle';
@@ -77,7 +233,7 @@ window.addEventListener('load', async () => {
     updateMuteIndicator();
     await initializeVoiceControl();
     applyTheme(currentTheme, { force: true });
-});
+}
 
 async function setMutedState(muted, { announce = false } = {}) {
     if (!recognition) {
