@@ -1,5 +1,5 @@
 body[data-app-state='experience'] {
-    background: #000;
+    background: linear-gradient(160deg, #020203 0%, #050708 45%, #0b0d10 100%);
     color: #f2f4f8;
 }
 
@@ -72,7 +72,8 @@ body[data-app-state='experience'] .voice-stage {
 
 body[data-app-state='experience'] .voice-circle {
     background: rgba(255, 255, 255, 0.04);
-    border: 2px solid rgba(255, 255, 255, 0.16);
+    border: 2px solid rgba(10, 189, 198, 0.35);
+    border-color: rgba(10, 189, 198, 0.35);
     box-shadow: none;
 }
 
