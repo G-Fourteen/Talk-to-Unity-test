@@ -1,9 +1,27 @@
+const landingSection = document.getElementById('landing');
+const appRoot = document.getElementById('app-root');
 const heroStage = document.getElementById('hero-stage');
 const heroImage = document.getElementById('hero-image');
 const muteIndicator = document.getElementById('mute-indicator');
 const indicatorText = muteIndicator?.querySelector('.indicator-text') ?? null;
 const aiCircle = document.querySelector('[data-role="ai"]');
 const userCircle = document.querySelector('[data-role="user"]');
+const dependencyLight = document.querySelector('[data-role="dependency-light"]');
+const dependencySummary = document.getElementById('dependency-summary');
+const dependencyList = document.getElementById('dependency-list');
+const launchButton = document.getElementById('launch-app');
+const recheckButton = document.getElementById('recheck-dependencies');
+
+if (heroImage) {
+    heroImage.setAttribute('crossorigin', 'anonymous');
+    heroImage.decoding = 'async';
+}
+
+const bodyElement = document.body;
+if (bodyElement) {
+    bodyElement.classList.remove('no-js');
+    bodyElement.classList.add('js-enabled');
+}
 
 let currentImageModel = 'flux';
 let chatHistory = [];
@@ -14,9 +32,36 @@ let hasMicPermission = false;
 let currentHeroUrl = '';
 let pendingHeroUrl = '';
 let currentTheme = 'dark';
+let recognitionRestartTimeout = null;
+let appStarted = false;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
+
+const dependencyChecks = [
+    {
+        id: 'secure-context',
+        label: 'Secure context (HTTPS or localhost)',
+        check: () =>
+            Boolean(window.isSecureContext) ||
+            /^localhost$|^127(?:\.\d{1,3}){3}$|^\[::1\]$/.test(window.location.hostname)
+    },
+    {
+        id: 'speech-recognition',
+        label: 'Web Speech Recognition API',
+        check: () => Boolean(SpeechRecognition)
+    },
+    {
+        id: 'speech-synthesis',
+        label: 'Speech synthesis voices',
+        check: () => typeof synth !== 'undefined' && typeof synth.speak === 'function'
+    },
+    {
+        id: 'microphone',
+        label: 'Microphone access',
+        check: () => Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+    }
+];
 
 if (heroStage && !heroStage.dataset.state) {
     heroStage.dataset.state = 'empty';
@@ -56,7 +101,121 @@ function resolveAssetPath(relativePath) {
     }
 }
 
-window.addEventListener('load', async () => {
+document.addEventListener('DOMContentLoaded', () => {
+    evaluateDependencies();
+
+    launchButton?.addEventListener('click', async () => {
+        const { allMet } = evaluateDependencies();
+        if (!allMet) {
+            return;
+        }
+
+        await startApplication();
+    });
+
+    recheckButton?.addEventListener('click', () => {
+        evaluateDependencies({ announce: true });
+    });
+});
+
+window.addEventListener('focus', () => {
+    if (!appStarted) {
+        evaluateDependencies();
+    }
+});
+
+function evaluateDependencies({ announce = false } = {}) {
+    const results = dependencyChecks.map((descriptor) => {
+        let met = false;
+        try {
+            met = Boolean(descriptor.check());
+        } catch (error) {
+            console.error(`Dependency check failed for ${descriptor.id}:`, error);
+        }
+
+        return {
+            ...descriptor,
+            met
+        };
+    });
+
+    const allMet = results.every((result) => result.met);
+    updateDependencyUI(results, allMet, { announce });
+
+    if (launchButton) {
+        launchButton.disabled = !allMet;
+        launchButton.setAttribute('aria-disabled', String(!allMet));
+    }
+
+    return { results, allMet };
+}
+
+function updateDependencyUI(results, allMet, { announce = false } = {}) {
+    if (dependencyList) {
+        results.forEach((result) => {
+            const item = dependencyList.querySelector(`[data-dependency="${result.id}"]`);
+            if (!item) {
+                return;
+            }
+
+            item.dataset.state = result.met ? 'pass' : 'fail';
+            const statusElement = item.querySelector('.dependency-status');
+            if (statusElement) {
+                statusElement.textContent = result.met ? 'Ready' : 'Action required';
+            }
+        });
+    }
+
+    if (dependencyLight) {
+        dependencyLight.dataset.state = allMet ? 'pass' : 'fail';
+        dependencyLight.setAttribute(
+            'aria-label',
+            allMet ? 'All dependencies satisfied' : 'One or more dependencies are missing'
+        );
+    }
+
+    if (dependencySummary) {
+        const unmet = results.filter((result) => !result.met);
+        if (unmet.length === 0) {
+            dependencySummary.textContent =
+                'All systems are ready. Launch the Voice Lab to begin your Unity AI conversation.';
+        } else {
+            const firstMissing = unmet[0]?.label ?? 'the required capabilities';
+            dependencySummary.textContent = `Resolve ${firstMissing} and re-run the check.`;
+        }
+    }
+
+    if (announce && !allMet) {
+        const missingNames = results
+            .filter((result) => !result.met)
+            .map((result) => result.label)
+            .join(', ');
+
+        if (missingNames) {
+            speak(`Missing dependencies: ${missingNames}`);
+        }
+    }
+}
+
+async function startApplication() {
+    if (appStarted) {
+        return;
+    }
+
+    appStarted = true;
+
+    if (appRoot?.hasAttribute('hidden')) {
+        appRoot.removeAttribute('hidden');
+    }
+
+    if (bodyElement) {
+        bodyElement.dataset.appState = 'experience';
+    }
+
+    if (landingSection) {
+        landingSection.setAttribute('aria-hidden', 'true');
+    }
+
     if (heroStage) {
         if (!heroStage.dataset.state) {
             heroStage.dataset.state = 'idle';
@@ -70,7 +229,7 @@ window.addEventListener('load', async () => {
     updateMuteIndicator();
     await initializeVoiceControl();
     applyTheme(currentTheme, { force: true });
-});
+}
 
 async function setMutedState(muted, { announce = false } = {}) {
     if (!recognition) {
@@ -298,16 +457,35 @@ function setupSpeechRecognition() {
             label: isMuted ? 'Microphone is muted' : 'Listening for your voice'
         });
 
+        if (recognitionRestartTimeout) {
+            clearTimeout(recognitionRestartTimeout);
+            recognitionRestartTimeout = null;
+        }
+
         if (!isMuted) {
-            try {
-                recognition.start();
-            } catch (error) {
-                console.error('Failed to restart recognition:', error);
-                setCircleState(userCircle, {
-                    error: true,
-                    label: 'Unable to restart microphone recognition'
-                });
-            }
+            recognitionRestartTimeout = window.setTimeout(() => {
+                recognitionRestartTimeout = null;
+                try {
+                    recognition.start();
+                } catch (error) {
+                    console.error('Failed to restart recognition:', error);
+                    setCircleState(userCircle, {
+                        error: true,
+                        label: 'Unable to restart microphone recognition'
+                    });
+
+                    if (!isMuted) {
+                        recognitionRestartTimeout = window.setTimeout(() => {
+                            recognitionRestartTimeout = null;
+                            try {
+                                recognition.start();
+                            } catch (retryError) {
+                                console.error('Retry to restart recognition failed:', retryError);
+                            }
+                        }, 800);
+                    }
+                }
+            }, 280);
         }
     };
 
@@ -559,6 +737,7 @@ function sanitizeForSpeech(text) {
 
         return part;
     });
+
     const commandTokens = [
         'open_image',
         'save_image',
@@ -604,6 +783,112 @@ function sanitizeImageUrl(rawUrl) {
         .replace(/^["'<\[({]+/, '')
         .replace(/["'>)\]}]+$/, '')
         .replace(/[,.;!]+$/, '');
+}
+
+const FALLBACK_IMAGE_KEYWORDS = [
+    'show',
+    'picture',
+    'image',
+    'photo',
+    'illustration',
+    'draw',
+    'paint',
+    'render',
+    'display',
+    'visual',
+    'wallpaper',
+    'generate'
+];
+
+function shouldRequestFallbackImage({ userInput = '', assistantMessage = '', fallbackPrompt = '', existingImageUrl = '' }) {
+    if (existingImageUrl || !fallbackPrompt) {
+        return false;
+    }
+
+    const combined = `${userInput} ${assistantMessage}`.toLowerCase();
+    if (combined.includes('[image]')) {
+        return true;
+    }
+
+    const keywordPattern = new RegExp(`\\b(?:${FALLBACK_IMAGE_KEYWORDS.join('|')})\\b`, 'i');
+    if (keywordPattern.test(combined)) {
+        return true;
+    }
+
+    const descriptiveCuePattern = /(here\s+(?:is|'s)|displaying|showing)\s+(?:an?\s+)?(?:image|picture|photo|visual)/i;
+    return descriptiveCuePattern.test(combined);
+}
+
+function cleanFallbackPrompt(text) {
+    return text
+        .replace(/^["'\s]+/, '')
+        .replace(/["'\s]+$/, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+function buildFallbackImagePrompt(userInput = '', assistantMessage = '') {
+    const sources = [assistantMessage, userInput];
+    for (const source of sources) {
+        if (!source) {
+            continue;
+        }
+
+        const explicitPromptMatch = source.match(/(?:image\s+prompt|prompt)\s*[:=]\s*"?([^"\n]+)"?/i);
+        if (explicitPromptMatch?.[1]) {
+            const sanitized = cleanFallbackPrompt(explicitPromptMatch[1]);
+            if (sanitized) {
+                return sanitized;
+            }
+        }
+    }
+
+    const rawCandidate = userInput || assistantMessage || '';
+    if (!rawCandidate) {
+        return '';
+    }
+
+    const cleaned = cleanFallbackPrompt(
+        rawCandidate
+            .replace(/\b(?:please|kindly)\b/gi, '')
+            .replace(/\b(?:can|could|would|will|may|might|let's)\b\s+(?:you\s+)?/gi, '')
+            .replace(
+                /\b(?:show|display|draw|paint|generate|create|make|produce|render|give|find|display)\b\s+(?:me\s+|us\s+)?/gi,
+                ''
+            )
+            .replace(
+                /\b(?:an?\s+)?(?:image|picture|photo|visual|illustration|render|drawing|art|shot|wallpaper)\b\s*(?:of|showing)?\s*/gi,
+                ''
+            )
+    );
+
+    if (!cleaned) {
+        return '';
+    }
+
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function buildPollinationsImageUrl(prompt, { model = currentImageModel } = {}) {
+    if (typeof prompt !== 'string') {
+        return '';
+    }
+
+    const sanitized = cleanFallbackPrompt(prompt);
+    if (!sanitized) {
+        return '';
+    }
+
+    const params = new URLSearchParams({
+        model: model || 'flux',
+        width: '1024',
+        height: '1024',
+        nologo: 'true',
+        enhance: 'true',
+        seed: Math.floor(Math.random() * 1_000_000_000).toString()
+    });
+
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(sanitized)}?${params.toString()}`;
 }
 
 function extractImageUrl(text) {
@@ -966,20 +1251,6 @@ function handleVoiceCommand(command) {
 const POLLINATIONS_TEXT_URL = 'https://text.pollinations.ai/openai';
 const UNITY_REFERRER = 'https://www.unityailab.com/';
 
-function shouldUseUnityReferrer() {
-    if (typeof window === 'undefined') {
-        return true;
-    }
-
-    try {
-        const unityOrigin = new URL(UNITY_REFERRER).origin;
-        return window.location.origin === unityOrigin;
-    } catch (error) {
-        console.error('Failed to parse UNITY_REFERRER:', error);
-        return false;
-    }
-}
-
 async function getAIResponse(userInput) {
     console.log(`Sending to AI: ${userInput}`);
 
@@ -999,15 +1270,6 @@ async function getAIResponse(userInput) {
             model: 'unity'
         });
 
-        const useUnityReferrer = shouldUseUnityReferrer();
-
-        if (!useUnityReferrer) {
-            console.warn(
-                'Pollinations referrer header disabled because the app is not '
-                + 'being served from https://www.unityailab.com/'
-            );
-        }
-
         const textResponse = await fetch(POLLINATIONS_TEXT_URL, {
             method: 'POST',
             headers: {
@@ -1019,12 +1281,6 @@ async function getAIResponse(userInput) {
             referrer: UNITY_REFERRER,
             referrerPolicy: 'strict-origin-when-cross-origin',
             body: pollinationsPayload,
-            ...(useUnityReferrer
-                ? {}
-                : {
-                      referrer: 'no-referrer',
-                      referrerPolicy: 'no-referrer'
-                  })
         });
 
         if (!textResponse.ok) {
@@ -1046,8 +1302,24 @@ async function getAIResponse(userInput) {
 
         const assistantMessage = cleanedText || aiText;
         const imageUrlFromResponse = extractImageUrl(aiText) || extractImageUrl(assistantMessage);
-        const assistantMessageWithoutImage = imageUrlFromResponse
-            ? removeImageReferences(assistantMessage, imageUrlFromResponse)
+
+        const fallbackPrompt = buildFallbackImagePrompt(userInput, assistantMessage);
+        let fallbackImageUrl = '';
+        if (
+            shouldRequestFallbackImage({
+                userInput,
+                assistantMessage,
+                fallbackPrompt,
+                existingImageUrl: imageUrlFromResponse
+            })
+        ) {
+            fallbackImageUrl = buildPollinationsImageUrl(fallbackPrompt, { model: currentImageModel });
+        }
+
+        const selectedImageUrl = imageUrlFromResponse || fallbackImageUrl;
+
+        const assistantMessageWithoutImage = selectedImageUrl
+            ? removeImageReferences(assistantMessage, selectedImageUrl)
             : assistantMessage;
 
         const finalAssistantMessage = assistantMessageWithoutImage.replace(/\n{3,}/g, '\n\n').trim();
@@ -1056,8 +1328,8 @@ async function getAIResponse(userInput) {
         chatHistory.push({ role: 'assistant', content: chatAssistantMessage });
 
         let heroImagePromise = Promise.resolve(false);
-        if (imageUrlFromResponse) {
-            heroImagePromise = updateHeroImage(imageUrlFromResponse);
+        if (selectedImageUrl) {
+            heroImagePromise = updateHeroImage(selectedImageUrl);
         }
 
         const shouldSuppressSpeech = commands.includes('shutup') || commands.includes('stop_speaking');
@@ -1124,7 +1396,7 @@ function updateHeroImage(imageUrl) {
     return new Promise((resolve) => {
         const image = new Image();
         image.decoding = 'async';
-        image.referrerPolicy = 'no-referrer';
+        image.crossOrigin = 'anonymous';
 
         image.onload = () => {
             if (pendingHeroUrl !== imageUrl) {
