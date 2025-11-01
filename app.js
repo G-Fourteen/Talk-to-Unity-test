@@ -1,8 +1,48 @@
-const background = document.getElementById('background');
+const landingSection = document.getElementById('landing');
+const appRoot = document.getElementById('app-root');
+const heroStage = document.getElementById('hero-stage');
+const heroImage = document.getElementById('hero-image');
 const muteIndicator = document.getElementById('mute-indicator');
 const indicatorText = muteIndicator?.querySelector('.indicator-text') ?? null;
+const normalizedPath = (() => {
+    const pathname = window.location.pathname || '';
+    const withoutIndex = pathname.replace(/index\.html$/i, '');
+    const trimmed = withoutIndex.replace(/\/+$/, '');
+    return trimmed || '/';
+})();
+const isExperienceRoute = /\/(?:AI)$/i.test(normalizedPath);
 const aiCircle = document.querySelector('[data-role="ai"]');
 const userCircle = document.querySelector('[data-role="user"]');
+const dependencyLight = document.querySelector('[data-role="dependency-light"]');
+const dependencySummary = document.getElementById('dependency-summary');
+const dependencyList = document.getElementById('dependency-list');
+const launchButton = document.getElementById('launch-app');
+const recheckButton = document.getElementById('recheck-dependencies');
+const redirectToLandingWithStatus = () => {
+    const landingUrl = new URL(window.location.href);
+    landingUrl.search = '';
+    landingUrl.hash = '';
+    landingUrl.pathname = landingUrl.pathname.replace(/AI\/?(?:index\.html)?$/i, '');
+    if (!landingUrl.pathname.endsWith('/')) {
+        landingUrl.pathname = `${landingUrl.pathname}/`;
+    }
+    landingUrl.searchParams.set('missing', '1');
+    window.location.replace(landingUrl.toString());
+};
+
+if (heroImage) {
+    heroImage.setAttribute('crossorigin', 'anonymous');
+    heroImage.decoding = 'async';
+}
+
+const bodyElement = document.body;
+if (bodyElement) {
+    bodyElement.classList.remove('no-js');
+    bodyElement.classList.add('js-enabled');
+    if (!bodyElement.dataset.appState) {
+        bodyElement.dataset.appState = 'landing';
+    }
+}
 
 let currentImageModel = 'flux';
 let chatHistory = [];
@@ -10,12 +50,46 @@ let systemPrompt = '';
 let recognition = null;
 let isMuted = true;
 let hasMicPermission = false;
-let currentBackgroundUrl = '';
-let pendingBackgroundUrl = '';
+let currentHeroUrl = '';
+let pendingHeroUrl = '';
 let currentTheme = 'dark';
-
+let recognitionRestartTimeout = null;
+let appStarted = false;
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
+
+const dependencyChecks = [
+    {
+        id: 'secure-context',
+        label: 'Secure connection (HTTPS or localhost)',
+        friendlyName: 'secure connection light',
+        check: () =>
+            Boolean(window.isSecureContext) ||
+            /^localhost$|^127(?:\.\d{1,3}){3}$|^\[::1\]$/.test(window.location.hostname)
+    },
+    {
+        id: 'speech-recognition',
+        label: 'Web Speech Recognition API',
+        friendlyName: 'speech listening light',
+        check: () => Boolean(SpeechRecognition)
+    },
+    {
+        id: 'speech-synthesis',
+        label: 'Speech synthesis voices',
+        friendlyName: 'talk-back voice light',
+        check: () => typeof synth !== 'undefined' && typeof synth.speak === 'function'
+    },
+    {
+        id: 'microphone',
+        label: 'Microphone access',
+        friendlyName: 'microphone light',
+        check: () => Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+    }
+];
+
+if (heroStage && !heroStage.dataset.state) {
+    heroStage.dataset.state = 'empty';
+}
 
 const currentScript = document.currentScript;
 const directoryUrl = (() => {
@@ -51,14 +125,146 @@ function resolveAssetPath(relativePath) {
     }
 }
 
-window.addEventListener('load', async () => {
+document.addEventListener('DOMContentLoaded', () => {
+    const evaluation = evaluateDependencies();
+
+    if (isExperienceRoute) {
+        if (evaluation.allMet) {
+            startApplication();
+        } else {
+            redirectToLandingWithStatus();
+        }
+        return;
+    }
+
+    launchButton?.addEventListener('click', () => {
+        const { allMet } = evaluateDependencies({ announce: true });
+        if (!allMet) {
+            return;
+        }
+
+        const targetUrl = new URL('./AI/', window.location.href);
+        window.location.assign(targetUrl.toString());
+    });
+
+    recheckButton?.addEventListener('click', () => {
+        evaluateDependencies({ announce: true });
+    });
+});
+
+window.addEventListener('focus', () => {
+    if (!appStarted) {
+        evaluateDependencies();
+    }
+});
+
+function evaluateDependencies({ announce = false } = {}) {
+    const results = dependencyChecks.map((descriptor) => {
+        let met = false;
+        try {
+            met = Boolean(descriptor.check());
+        } catch (error) {
+            console.error(`Dependency check failed for ${descriptor.id}:`, error);
+        }
+
+        return {
+            ...descriptor,
+            met
+        };
+    });
+
+    const allMet = results.every((result) => result.met);
+    updateDependencyUI(results, allMet, { announce });
+
+    if (launchButton) {
+        launchButton.disabled = !allMet;
+        launchButton.setAttribute('aria-disabled', String(!allMet));
+    }
+
+    return { results, allMet };
+}
+
+function updateDependencyUI(results, allMet, { announce = false } = {}) {
+    if (dependencyList) {
+        results.forEach((result) => {
+            const item = dependencyList.querySelector(`[data-dependency="${result.id}"]`);
+            if (!item) {
+                return;
+            }
+
+            item.dataset.state = result.met ? 'pass' : 'fail';
+            const statusElement = item.querySelector('.dependency-status');
+            if (statusElement) {
+                statusElement.textContent = result.met ? 'Ready' : 'Action required';
+            }
+        });
+    }
+
+    if (dependencyLight) {
+        dependencyLight.dataset.state = allMet ? 'pass' : 'fail';
+        dependencyLight.setAttribute(
+            'aria-label',
+            allMet ? 'All dependencies satisfied' : 'One or more dependencies are missing'
+        );
+    }
+
+    if (dependencySummary) {
+        const unmet = results.filter((result) => !result.met);
+        if (unmet.length === 0) {
+            dependencySummary.textContent =
+                'All the lights are green! Press "Launch Unity Voice Lab" to start chatting.';
+        } else {
+            const firstMissing = unmet[0];
+            const friendlyName = firstMissing?.friendlyName ?? firstMissing?.label ?? 'missing light';
+            dependencySummary.textContent = `The ${friendlyName} is still red. Follow the tip below, then press "Check again."`;
+        }
+    }
+
+    if (announce && !allMet) {
+        const missingNames = results
+            .filter((result) => !result.met)
+            .map((result) => result.friendlyName ?? result.label)
+            .join(', ');
+
+        if (missingNames) {
+            speak(`Missing dependencies: ${missingNames}`);
+        }
+    }
+}
+
+async function startApplication() {
+    if (appStarted) {
+        return;
+    }
+
+    appStarted = true;
+
+    if (appRoot?.hasAttribute('hidden')) {
+        appRoot.removeAttribute('hidden');
+    }
+
+    if (bodyElement) {
+        bodyElement.dataset.appState = 'experience';
+    }
+
+    if (landingSection) {
+        landingSection.setAttribute('aria-hidden', 'true');
+    }
+
+    if (heroStage) {
+        if (!heroStage.dataset.state) {
+            heroStage.dataset.state = 'idle';
+        }
+        heroStage.classList.add('is-visible');
+    }
+
     applyTheme(currentTheme);
     await loadSystemPrompt();
     setupSpeechRecognition();
     updateMuteIndicator();
     await initializeVoiceControl();
     applyTheme(currentTheme, { force: true });
-});
+}
 
 async function setMutedState(muted, { announce = false } = {}) {
     if (!recognition) {
@@ -163,19 +369,31 @@ async function setMutedState(muted, { announce = false } = {}) {
     }
 }
 
-function applyTheme(theme, { announce = false } = {}) {
+function applyTheme(theme, { announce = false, force = false } = {}) {
     const normalizedTheme = theme === 'light' ? 'light' : 'dark';
     const body = document.body;
+    const root = document.documentElement;
 
     if (!body) {
         currentTheme = normalizedTheme;
+        if (root) {
+            root.dataset.theme = normalizedTheme;
+        }
         return;
     }
 
-    const wasThemeChanged = currentTheme !== normalizedTheme || body.dataset.theme !== normalizedTheme;
+    const previousTheme = currentTheme;
+    const wasThemeChanged =
+        force ||
+        previousTheme !== normalizedTheme ||
+        body.dataset.theme !== normalizedTheme ||
+        (root?.dataset.theme ?? previousTheme) !== normalizedTheme;
 
     currentTheme = normalizedTheme;
     body.dataset.theme = normalizedTheme;
+    if (root) {
+        root.dataset.theme = normalizedTheme;
+    }
 
     if (announce) {
         if (!wasThemeChanged) {
@@ -191,7 +409,15 @@ function setCircleState(circle, { speaking = false, listening = false, error = f
         return;
     }
 
-    circle.classList.toggle('is-speaking', speaking);
+    if (speaking) {
+        if (circle.classList.contains('is-speaking')) {
+            circle.classList.remove('is-speaking');
+            void circle.offsetWidth;
+        }
+        circle.classList.add('is-speaking');
+    } else {
+        circle.classList.remove('is-speaking');
+    }
     circle.classList.toggle('is-listening', listening);
     circle.classList.toggle('is-error', error);
 
@@ -266,16 +492,35 @@ function setupSpeechRecognition() {
             label: isMuted ? 'Microphone is muted' : 'Listening for your voice'
         });
 
+        if (recognitionRestartTimeout) {
+            clearTimeout(recognitionRestartTimeout);
+            recognitionRestartTimeout = null;
+        }
+
         if (!isMuted) {
-            try {
-                recognition.start();
-            } catch (error) {
-                console.error('Failed to restart recognition:', error);
-                setCircleState(userCircle, {
-                    error: true,
-                    label: 'Unable to restart microphone recognition'
-                });
-            }
+            recognitionRestartTimeout = window.setTimeout(() => {
+                recognitionRestartTimeout = null;
+                try {
+                    recognition.start();
+                } catch (error) {
+                    console.error('Failed to restart recognition:', error);
+                    setCircleState(userCircle, {
+                        error: true,
+                        label: 'Unable to restart microphone recognition'
+                    });
+
+                    if (!isMuted) {
+                        recognitionRestartTimeout = window.setTimeout(() => {
+                            recognitionRestartTimeout = null;
+                            try {
+                                recognition.start();
+                            } catch (retryError) {
+                                console.error('Retry to restart recognition failed:', retryError);
+                            }
+                        }, 800);
+                    }
+                }
+            }, 280);
         }
     };
 
@@ -413,26 +658,61 @@ function isLikelyUrlSegment(segment) {
     }
 
     const cleaned = segment
-        .replace(/^[<(\[]+/g, '')
-        .replace(/[>\])]+$/g, '')
+        .replace(/^[<({\[\s'"“”‘’`]+/g, '')
+        .replace(/[>)}\]\s'"“”‘’`]+$/g, '')
         .replace(/[.,!?;:]+$/g, '')
-        .trim()
-        .toLowerCase();
+        .trim();
 
     if (cleaned === '') {
         return false;
     }
 
-    if (cleaned.startsWith('http://') || cleaned.startsWith('https://') || cleaned.startsWith('www.')) {
+    const normalized = cleaned.toLowerCase();
+
+    if (
+        normalized.startsWith('http://') ||
+        normalized.startsWith('https://') ||
+        normalized.startsWith('www.') ||
+        normalized.includes('://')
+    ) {
         return true;
     }
 
-    if (/^[a-z0-9.-]+\.[a-z]{2,}(?:[/?#].*)?$/.test(cleaned)) {
-
+    if (/^[a-z0-9.-]+\.[a-z]{2,}(?:[/?#].*)?$/.test(normalized)) {
         return true;
     }
 
     return false;
+}
+
+function removeMarkdownLinkTargets(value) {
+    return value
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, altText, url) => {
+            return isLikelyUrlSegment(url) ? altText : _match;
+        })
+        .replace(/\[([^\]]*)\]\(([^)]+)\)/g, (_match, linkText, url) => {
+            return isLikelyUrlSegment(url) ? linkText : _match;
+        })
+        .replace(/\[(?:command|action)[^\]]*\]\([^)]*\)/gi, ' ');
+}
+
+function removeCommandArtifacts(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    let result = value
+        .replace(/\[[^\]]*\bcommand\b[^\]]*\]/gi, ' ')
+        .replace(/\([^)]*\bcommand\b[^)]*\)/gi, ' ')
+        .replace(/<[^>]*\bcommand\b[^>]*>/gi, ' ')
+        .replace(/\bcommands?\s*[:=-]\s*[a-z0-9_,\s-]+/gi, ' ')
+        .replace(/\bactions?\s*[:=-]\s*[a-z0-9_,\s-]+/gi, ' ')
+        .replace(/\b(?:execute|run)\s+command\s*(?:[:=-]\s*)?[a-z0-9_-]*/gi, ' ')
+        .replace(/\bcommand\s*(?:[:=-]\s*|\s+)(?:[a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)?/gi, ' ');
+
+    result = result.replace(/^\s*[-*]?\s*(?:command|action)[^\n]*$/gim, ' ');
+
+    return result;
 }
 
 function sanitizeForSpeech(text) {
@@ -440,12 +720,398 @@ function sanitizeForSpeech(text) {
         return '';
     }
 
+    const withoutDirectives = text
+        .replace(/\[command:[^\]]*\]/gi, ' ')
+        .replace(/\{command:[^}]*\}/gi, ' ')
+        .replace(/<command[^>]*>[^<]*<\/command>/gi, ' ')
+        .replace(/\b(?:command|action)\s*[:=]\s*([a-z0-9_\-]+)/gi, ' ')
+        .replace(/\bcommands?\s*[:=]\s*([a-z0-9_\-]+)/gi, ' ')
+        .replace(/\b(?:command|action)\s*(?:->|=>|::)\s*([a-z0-9_\-]+)/gi, ' ')
+        .replace(/\b(?:command|action)\b\s*[()\-:=]*\s*[a-z0-9_\-]+/gi, ' ')
+        .replace(/\bcommand\s*\([^)]*\)/gi, ' ');
 
-    const parts = text.split(/(\s+)/);
-    const sanitizedParts = parts.map((part) => (isLikelyUrlSegment(part) ? '' : part));
-    const sanitized = sanitizedParts.join('').replace(/\s{2,}/g, ' ').trim();
+    const withoutPollinations = withoutDirectives
+        .replace(/https?:\/\/\S*images?\.pollinations\.ai\S*/gi, '')
+        .replace(/\b\S*images?\.pollinations\.ai\S*\b/gi, '');
+
+    const withoutMarkdownTargets = removeMarkdownLinkTargets(withoutPollinations);
+    const withoutCommands = removeCommandArtifacts(withoutMarkdownTargets);
+
+    const withoutGenericUrls = withoutCommands
+        .replace(/https?:\/\/\S+/gi, ' ')
+        .replace(/\bwww\.[^\s)]+/gi, ' ');
+
+    const withoutSpacedUrls = withoutGenericUrls
+        .replace(/h\s*t\s*t\s*p\s*s?\s*:\s*\/\s*\/\s*[\w\-./?%#&=]+/gi, ' ')
+        .replace(/\bhttps?\b/gi, ' ')
+        .replace(/\bwww\b/gi, ' ');
+
+    const withoutSpelledUrls = withoutSpacedUrls
+        .replace(/h\s*t\s*t\s*p\s*s?\s*(?:[:=]|colon)\s*\/\s*\/\s*[\w\-./?%#&=]+/gi, ' ')
+        .replace(/\b(?:h\s*t\s*t\s*p\s*s?|h\s*t\s*t\s*p)\b/gi, ' ')
+        .replace(/\bcolon\b/gi, ' ')
+        .replace(/\bslash\b/gi, ' ');
+
+    const parts = withoutSpelledUrls.split(/(\s+)/);
+    const sanitizedParts = parts.map((part) => {
+        if (isLikelyUrlSegment(part)) {
+            return '';
+        }
+
+        if (/(?:https?|www|:\/\/|\.com|\.net|\.org|\.io|\.ai|\.co|\.gov|\.edu)/i.test(part)) {
+            return '';
+        }
+
+        if (/\bcommand\b/i.test(part)) {
+            return '';
+        }
+
+        if (/(?:image|artwork|photo)\s+(?:url|link)/i.test(part)) {
+            return '';
+        }
+
+        return part;
+    });
+
+    const commandTokens = [
+        'open_image',
+        'save_image',
+        'copy_image',
+        'mute_microphone',
+        'unmute_microphone',
+        'stop_speaking',
+        'shutup',
+        'set_model_flux',
+        'set_model_turbo',
+        'set_model_kontext',
+        'clear_chat_history',
+        'theme_light',
+        'theme_dark'
+    ];
+
+    let sanitized = sanitizedParts
+        .join('')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/\s+([.,!?;:])/g, '$1')
+        .replace(/\(\s*\)/g, '')
+        .replace(/\[\s*\]/g, '')
+        .replace(/\{\s*\}/g, '')
+        .replace(/\b(?:https?|www)\b/gi, '')
+        .replace(/\b[a-z0-9]+\s+dot\s+[a-z0-9]+\b/gi, '')
+        .replace(/\b(?:dot\s+)(?:com|net|org|io|ai|co|gov|edu|xyz)\b/gi, '')
+
+        .replace(/<\s*>/g, '')
+        .replace(/\bcommand\b/gi, '')
+        .replace(/\b(?:image|artwork|photo)\s+(?:url|link)\b.*$/gim, '')
+        .trim();
 
     return sanitized;
+}
+
+function sanitizeImageUrl(rawUrl) {
+    if (typeof rawUrl !== 'string') {
+        return '';
+    }
+
+    return rawUrl
+        .trim()
+        .replace(/^["'<\[({]+/, '')
+        .replace(/["'>)\]}]+$/, '')
+        .replace(/[,.;!]+$/, '');
+}
+
+const FALLBACK_IMAGE_KEYWORDS = [
+    'show',
+    'picture',
+    'image',
+    'photo',
+    'illustration',
+    'draw',
+    'paint',
+    'render',
+    'display',
+    'visual',
+    'wallpaper',
+    'generate'
+];
+
+function shouldRequestFallbackImage({ userInput = '', assistantMessage = '', fallbackPrompt = '', existingImageUrl = '' }) {
+    if (existingImageUrl || !fallbackPrompt) {
+        return false;
+    }
+
+    const combined = `${userInput} ${assistantMessage}`.toLowerCase();
+    if (combined.includes('[image]')) {
+        return true;
+    }
+
+    const keywordPattern = new RegExp(`\\b(?:${FALLBACK_IMAGE_KEYWORDS.join('|')})\\b`, 'i');
+    if (keywordPattern.test(combined)) {
+        return true;
+    }
+
+    const descriptiveCuePattern = /(here\s+(?:is|'s)|displaying|showing)\s+(?:an?\s+)?(?:image|picture|photo|visual)/i;
+    return descriptiveCuePattern.test(combined);
+}
+
+function cleanFallbackPrompt(text) {
+    return text
+        .replace(/^["'\s]+/, '')
+        .replace(/["'\s]+$/, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+function buildFallbackImagePrompt(userInput = '', assistantMessage = '') {
+    const sources = [assistantMessage, userInput];
+    for (const source of sources) {
+        if (!source) {
+            continue;
+        }
+
+        const explicitPromptMatch = source.match(/(?:image\s+prompt|prompt)\s*[:=]\s*"?([^"\n]+)"?/i);
+        if (explicitPromptMatch?.[1]) {
+            const sanitized = cleanFallbackPrompt(explicitPromptMatch[1]);
+            if (sanitized) {
+                return sanitized;
+            }
+        }
+    }
+
+    const rawCandidate = userInput || assistantMessage || '';
+    if (!rawCandidate) {
+        return '';
+    }
+
+    const cleaned = cleanFallbackPrompt(
+        rawCandidate
+            .replace(/\b(?:please|kindly)\b/gi, '')
+            .replace(/\b(?:can|could|would|will|may|might|let's)\b\s+(?:you\s+)?/gi, '')
+            .replace(
+                /\b(?:show|display|draw|paint|generate|create|make|produce|render|give|find|display)\b\s+(?:me\s+|us\s+)?/gi,
+                ''
+            )
+            .replace(
+                /\b(?:an?\s+)?(?:image|picture|photo|visual|illustration|render|drawing|art|shot|wallpaper)\b\s*(?:of|showing)?\s*/gi,
+                ''
+            )
+    );
+
+    if (!cleaned) {
+        return '';
+    }
+
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function buildPollinationsImageUrl(prompt, { model = currentImageModel } = {}) {
+    if (typeof prompt !== 'string') {
+        return '';
+    }
+
+    const sanitized = cleanFallbackPrompt(prompt);
+    if (!sanitized) {
+        return '';
+    }
+
+    const params = new URLSearchParams({
+        model: model || 'flux',
+        width: '1024',
+        height: '1024',
+        nologo: 'true',
+        enhance: 'true',
+        seed: Math.floor(Math.random() * 1_000_000_000).toString()
+    });
+
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(sanitized)}?${params.toString()}`;
+}
+
+function extractImageUrl(text) {
+    if (typeof text !== 'string' || text.trim() === '') {
+        return '';
+    }
+
+    const markdownMatch = text.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/i);
+    if (markdownMatch && markdownMatch[1]) {
+        return sanitizeImageUrl(markdownMatch[1]);
+    }
+
+    const urlMatch = text.match(/https?:\/\/[^\s)]+/i);
+    if (urlMatch && urlMatch[0]) {
+        return sanitizeImageUrl(urlMatch[0]);
+    }
+
+    return '';
+}
+
+function escapeRegExp(value) {
+    return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function removeImageReferences(text, imageUrl) {
+    if (typeof text !== 'string') {
+        return '';
+    }
+
+    if (!imageUrl) {
+        return text.trim();
+    }
+
+    const sanitizedUrl = sanitizeImageUrl(imageUrl);
+    if (!sanitizedUrl) {
+        return text.trim();
+    }
+
+    let result = text;
+    const escapedUrl = escapeRegExp(sanitizedUrl);
+
+    const markdownImageRegex = new RegExp(`!\\[[^\\]]*\\]\\(${escapedUrl}\\)`, 'gi');
+    result = result.replace(markdownImageRegex, '');
+
+    const markdownLinkRegex = new RegExp(`\\[[^\\]]*\\]\\(${escapedUrl}\\)`, 'gi');
+    result = result.replace(markdownLinkRegex, '');
+
+    const rawUrlRegex = new RegExp(escapedUrl, 'gi');
+    result = result.replace(rawUrlRegex, '');
+
+    result = result
+        .replace(/\bimage\s+url\s*:?/gi, '')
+        .replace(/\bimage\s+link\s*:?/gi, '')
+        .replace(/\bart(?:work)?\s+(?:url|link)\s*:?/gi, '')
+        .replace(/<\s*>/g, '')
+        .replace(/\(\s*\)/g, '')
+        .replace(/\[\s*\]/g, '');
+
+    return result
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\s+([.,!?;:])/g, '$1')
+        .trim();
+}
+
+function normalizeCommandValue(value) {
+    return value.replace(/[\s-]+/g, '_').trim().toLowerCase();
+}
+
+function parseAiDirectives(responseText) {
+    if (typeof responseText !== 'string' || responseText.trim() === '') {
+        return { cleanedText: '', commands: [] };
+    }
+
+    const commands = [];
+    let workingText = responseText;
+
+    const patterns = [
+        /\[command:\s*([^\]]+)\]/gi,
+        /\{command:\s*([^}]+)\}/gi,
+        /<command[^>]*>\s*([^<]*)<\/command>/gi,
+        /\bcommand\s*[:=]\s*([a-z0-9_\-]+)/gi,
+        /\bcommands?\s*[:=]\s*([a-z0-9_\-]+)/gi,
+        /\baction\s*[:=]\s*([a-z0-9_\-]+)/gi,
+        /\b(?:command|action)\s*(?:->|=>|::)\s*([a-z0-9_\-]+)/gi,
+        /\bcommand\s*\(\s*([^)]+?)\s*\)/gi
+    ];
+
+    for (const pattern of patterns) {
+        workingText = workingText.replace(pattern, (_match, commandValue) => {
+            if (commandValue) {
+                const normalized = normalizeCommandValue(commandValue);
+                if (normalized) {
+                    commands.push(normalized);
+                }
+            }
+            return ' ';
+        });
+    }
+
+    const slashCommandRegex = /(?:^|\s)\/(open_image|save_image|copy_image|mute_microphone|unmute_microphone|stop_speaking|shutup|set_model_flux|set_model_turbo|set_model_kontext|clear_chat_history|theme_light|theme_dark)\b/gi;
+    workingText = workingText.replace(slashCommandRegex, (_match, commandValue) => {
+        const normalized = normalizeCommandValue(commandValue);
+        if (normalized) {
+            commands.push(normalized);
+        }
+        return ' ';
+    });
+
+    const directiveBlockRegex = /(?:^|\n)\s*(?:commands?|actions?)\s*:?\s*(?:\n|$)((?:\s*[-*•]?\s*[a-z0-9_\-]+\s*(?:\(\))?\s*(?:\n|$))+)/gi;
+    workingText = workingText.replace(directiveBlockRegex, (_match, blockContent) => {
+        const lines = blockContent
+            .split(/\n+/)
+            .map((line) => line.replace(/^[^a-z0-9]+/i, '').trim())
+            .filter(Boolean);
+
+        for (const line of lines) {
+            const normalized = normalizeCommandValue(line.replace(/\(\)/g, ''));
+            if (normalized) {
+                commands.push(normalized);
+            }
+        }
+
+        return '\n';
+    });
+
+    const cleanedText = workingText.replace(/\n{3,}/g, '\n\n').trim();
+    const uniqueCommands = [...new Set(commands)];
+
+    return { cleanedText, commands: uniqueCommands };
+}
+
+async function executeAiCommand(command) {
+    if (!command) {
+        return false;
+    }
+
+    const normalized = normalizeCommandValue(command);
+
+    switch (normalized) {
+        case 'mute_microphone':
+            await setMutedState(true, { announce: true });
+            return true;
+        case 'unmute_microphone':
+            await setMutedState(false, { announce: true });
+            return true;
+        case 'stop_speaking':
+        case 'shutup':
+            synth.cancel();
+            setCircleState(aiCircle, {
+                speaking: false,
+                label: 'Unity is idle'
+            });
+            return true;
+        case 'copy_image':
+            await copyImageToClipboard();
+            return true;
+        case 'save_image':
+            await saveImage();
+            return true;
+        case 'open_image':
+            openImageInNewTab();
+            return true;
+        case 'set_model_flux':
+            currentImageModel = 'flux';
+            speak('Image model set to flux.');
+            return true;
+        case 'set_model_turbo':
+            currentImageModel = 'turbo';
+            speak('Image model set to turbo.');
+            return true;
+        case 'set_model_kontext':
+            currentImageModel = 'kontext';
+            speak('Image model set to kontext.');
+            return true;
+        case 'clear_chat_history':
+            chatHistory = [];
+            speak('Chat history cleared.');
+            return true;
+        case 'theme_light':
+            applyTheme('light', { announce: true });
+            return true;
+        case 'theme_dark':
+            applyTheme('dark', { announce: true });
+            return true;
+        default:
+            return false;
+    }
 }
 
 function speak(text) {
@@ -494,17 +1160,6 @@ function speak(text) {
     synth.speak(utterance);
 }
 
-
-function applyTheme(theme, { force = false } = {}) {
-    const normalizedTheme = theme === 'light' ? 'light' : 'dark';
-
-    if (!force && normalizedTheme === currentTheme) {
-        return;
-    }
-
-    currentTheme = normalizedTheme;
-    document.documentElement.dataset.theme = normalizedTheme;
-}
 
 function handleVoiceCommand(command) {
     const lowerCaseCommand = command.toLowerCase();
@@ -631,20 +1286,6 @@ function handleVoiceCommand(command) {
 const POLLINATIONS_TEXT_URL = 'https://text.pollinations.ai/openai';
 const UNITY_REFERRER = 'https://www.unityailab.com/';
 
-function shouldUseUnityReferrer() {
-    if (typeof window === 'undefined') {
-        return true;
-    }
-
-    try {
-        const unityOrigin = new URL(UNITY_REFERRER).origin;
-        return window.location.origin === unityOrigin;
-    } catch (error) {
-        console.error('Failed to parse UNITY_REFERRER:', error);
-        return false;
-    }
-}
-
 async function getAIResponse(userInput) {
     console.log(`Sending to AI: ${userInput}`);
 
@@ -664,15 +1305,6 @@ async function getAIResponse(userInput) {
             model: 'unity'
         });
 
-        const useUnityReferrer = shouldUseUnityReferrer();
-
-        if (!useUnityReferrer) {
-            console.warn(
-                'Pollinations referrer header disabled because the app is not '
-                + 'being served from https://www.unityailab.com/'
-            );
-        }
-
         const textResponse = await fetch(POLLINATIONS_TEXT_URL, {
             method: 'POST',
             headers: {
@@ -684,12 +1316,6 @@ async function getAIResponse(userInput) {
             referrer: UNITY_REFERRER,
             referrerPolicy: 'strict-origin-when-cross-origin',
             body: pollinationsPayload,
-            ...(useUnityReferrer
-                ? {}
-                : {
-                      referrer: 'no-referrer',
-                      referrerPolicy: 'no-referrer'
-                  })
         });
 
         if (!textResponse.ok) {
@@ -710,14 +1336,47 @@ async function getAIResponse(userInput) {
         }
 
         const assistantMessage = cleanedText || aiText;
-        chatHistory.push({ role: 'assistant', content: assistantMessage });
+        const imageUrlFromResponse = extractImageUrl(aiText) || extractImageUrl(assistantMessage);
 
-        if (!commands.includes('shutup')) {
-            const spokenText = sanitizeForSpeech(assistantMessage);
+        const fallbackPrompt = buildFallbackImagePrompt(userInput, assistantMessage);
+        let fallbackImageUrl = '';
+        if (
+            shouldRequestFallbackImage({
+                userInput,
+                assistantMessage,
+                fallbackPrompt,
+                existingImageUrl: imageUrlFromResponse
+            })
+        ) {
+            fallbackImageUrl = buildPollinationsImageUrl(fallbackPrompt, { model: currentImageModel });
+        }
+
+        const selectedImageUrl = imageUrlFromResponse || fallbackImageUrl;
+
+        const assistantMessageWithoutImage = selectedImageUrl
+            ? removeImageReferences(assistantMessage, selectedImageUrl)
+            : assistantMessage;
+
+        const finalAssistantMessage = assistantMessageWithoutImage.replace(/\n{3,}/g, '\n\n').trim();
+        const chatAssistantMessage = finalAssistantMessage || '[image]';
+
+        chatHistory.push({ role: 'assistant', content: chatAssistantMessage });
+
+        let heroImagePromise = Promise.resolve(false);
+        if (selectedImageUrl) {
+            heroImagePromise = updateHeroImage(selectedImageUrl);
+        }
+
+        const shouldSuppressSpeech = commands.includes('shutup') || commands.includes('stop_speaking');
+
+        if (!shouldSuppressSpeech) {
+            const spokenText = sanitizeForSpeech(finalAssistantMessage);
             if (spokenText) {
+                await heroImagePromise;
                 speak(spokenText);
             }
         }
+
     } catch (error) {
         console.error('Error getting text from Pollinations AI:', error);
         setCircleState(aiCircle, {
@@ -732,61 +1391,82 @@ async function getAIResponse(userInput) {
             });
         }, 2400);
     }
-
-    try {
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-            userInput
-        )}?model=${currentImageModel}&referrer=unityailab.com`;
-        updateBackgroundImage(imageUrl);
-    } catch (error) {
-        console.error('Error getting image from Pollinations AI:', error);
-    }
 }
 
 function getImageUrl() {
-    if (currentBackgroundUrl) {
-        return currentBackgroundUrl;
+    if (currentHeroUrl) {
+        return currentHeroUrl;
     }
 
-    if (!background) {
-        return '';
+    if (heroImage?.getAttribute('src')) {
+        return heroImage.getAttribute('src');
     }
-    const style = window.getComputedStyle(background);
-    const backgroundImage = style.getPropertyValue('background-image');
-    return backgroundImage.slice(5, -2);
+
+    return '';
 }
 
-function updateBackgroundImage(imageUrl) {
-    if (!background || !imageUrl) {
-        return;
+function updateHeroImage(imageUrl) {
+    if (!heroStage || !heroImage || !imageUrl) {
+        return Promise.resolve(false);
     }
 
-    if (imageUrl === currentBackgroundUrl) {
-        return;
+    heroStage.classList.add('is-visible');
+
+    if (imageUrl === currentHeroUrl && heroStage.dataset.state === 'loaded') {
+        heroStage.setAttribute('aria-hidden', heroStage.classList.contains('has-image') ? 'false' : 'true');
+        return Promise.resolve(true);
     }
 
-    pendingBackgroundUrl = imageUrl;
+    heroStage.setAttribute('aria-hidden', 'true');
 
-    const image = new Image();
+    const hadImage = heroStage.classList.contains('has-image');
 
-    image.onload = () => {
-        if (pendingBackgroundUrl !== imageUrl) {
-            return;
-        }
+    pendingHeroUrl = imageUrl;
+    heroStage.dataset.state = 'loading';
+    if (!hadImage) {
+        heroStage.classList.remove('has-image');
+        heroImage.removeAttribute('src');
+    }
 
-        currentBackgroundUrl = imageUrl;
-        pendingBackgroundUrl = '';
-        background.style.backgroundImage = `url("${imageUrl}")`;
-    };
+    return new Promise((resolve) => {
+        const image = new Image();
+        image.decoding = 'async';
+        image.crossOrigin = 'anonymous';
 
-    image.onerror = (error) => {
-        if (pendingBackgroundUrl === imageUrl) {
-            pendingBackgroundUrl = '';
-        }
-        console.error('Failed to load background image:', error);
-    };
+        image.onload = () => {
+            if (pendingHeroUrl !== imageUrl) {
+                resolve(false);
+                return;
+            }
 
-    image.src = imageUrl;
+            currentHeroUrl = imageUrl;
+            pendingHeroUrl = '';
+            heroImage.src = imageUrl;
+            heroStage.dataset.state = 'loaded';
+            heroStage.classList.add('has-image');
+            heroStage.setAttribute('aria-hidden', 'false');
+            resolve(true);
+        };
+
+        image.onerror = (error) => {
+            if (pendingHeroUrl === imageUrl) {
+                pendingHeroUrl = '';
+            }
+            if (!hadImage) {
+                heroStage.dataset.state = 'error';
+                heroStage.classList.remove('has-image');
+                heroImage.removeAttribute('src');
+                heroStage.setAttribute('aria-hidden', 'true');
+            } else {
+                heroStage.dataset.state = 'loaded';
+                heroStage.setAttribute('aria-hidden', 'false');
+            }
+            console.error('Failed to load hero image:', error);
+            resolve(false);
+        };
+
+        image.src = imageUrl;
+    });
 }
 
 async function copyImageToClipboard() {
