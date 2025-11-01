@@ -4,8 +4,84 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Unity Voice Lab – System Check</title>
-    <link rel="stylesheet" href="./style.css" />
-    <script defer src="./app.js"></script>
+    <script>
+        (function () {
+            var win = window;
+            var doc = document;
+
+            try {
+                var path = win.location.pathname || '';
+                if (!path.endsWith('/')) {
+                    var lastSegment = path.substring(path.lastIndexOf('/') + 1);
+                    if (lastSegment && lastSegment.indexOf('.') === -1) {
+                        var search = win.location.search || '';
+                        var hash = win.location.hash || '';
+                        var destination = path + '/' + search + hash;
+                        win.location.replace(destination);
+                        return;
+                    }
+                }
+            } catch (redirectError) {
+                console.warn('Failed to normalize trailing slash for assets:', redirectError);
+            }
+
+            var assetBase = (function () {
+                try {
+                    var url = new URL(win.location.href);
+                    url.search = '';
+                    url.hash = '';
+
+                    if (!url.pathname.endsWith('/')) {
+                        var segments = url.pathname.split('/');
+                        var last = segments.pop() || '';
+                        if (last && last.indexOf('.') === -1) {
+                            url.pathname = segments.concat(last + '/').join('/');
+                        } else {
+                            url.pathname = segments.join('/') + '/';
+                        }
+                    }
+
+                    return url.toString();
+                } catch (error) {
+                    console.warn('Unable to derive asset base URL:', error);
+                    var origin = typeof win.location.origin === 'string' && win.location.origin !== 'null' ? win.location.origin : '';
+                    var pathname = win.location.pathname || '/';
+                    if (!pathname.endsWith('/')) {
+                        var index = pathname.lastIndexOf('/');
+                        pathname = index >= 0 ? pathname.slice(0, index + 1) : '/';
+                    }
+                    return origin + pathname;
+                }
+            })();
+
+            var assetVersionTag = '20240506';
+
+            try {
+                win.__talkToUnityAssetBase = assetBase;
+                win.__talkToUnityAssetVersion = assetVersionTag;
+
+                var head = doc.head || doc.getElementsByTagName('head')[0];
+                if (!head) {
+                    return;
+                }
+
+                var style = doc.createElement('link');
+                style.rel = 'stylesheet';
+                style.href = assetBase + 'style.css?v=' + assetVersionTag;
+                head.appendChild(style);
+
+                var script = doc.createElement('script');
+                script.defer = true;
+                script.src = assetBase + 'app.js?v=' + assetVersionTag;
+                head.appendChild(script);
+            } catch (appendError) {
+                console.error('Failed to append application assets:', appendError);
+            }
+        })();
+    </script>
+    <noscript>
+        <link rel="stylesheet" href="./style.css" />
+    </noscript>
 </head>
 <body class="no-js" data-app-state="landing">
     <noscript>

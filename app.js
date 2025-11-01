@@ -12,6 +12,8 @@ const dependencyList = document.getElementById('dependency-list');
 const launchButton = document.getElementById('launch-app');
 const recheckButton = document.getElementById('recheck-dependencies');
 const statusMessage = document.getElementById('status-message');
+const assetBaseOverride = typeof window !== 'undefined' ? window.__talkToUnityAssetBase : '';
+const assetVersion = typeof window !== 'undefined' ? window.__talkToUnityAssetVersion : '';
 
 if (heroImage) {
     heroImage.setAttribute('crossorigin', 'anonymous');
@@ -178,6 +180,11 @@ if (heroStage && !heroStage.dataset.state) {
 
 const currentScript = document.currentScript;
 const directoryUrl = (() => {
+    const fromOverride = typeof assetBaseOverride === 'string' && assetBaseOverride ? assetBaseOverride : null;
+    if (fromOverride) {
+        return fromOverride.endsWith('/') ? fromOverride : `${fromOverride}/`;
+    }
+
     if (currentScript?.src) {
         try {
             return new URL('./', currentScript.src).toString();
@@ -203,7 +210,22 @@ const directoryUrl = (() => {
 
 function resolveAssetPath(relativePath) {
     try {
-        return new URL(relativePath, directoryUrl).toString();
+        const url = new URL(relativePath, directoryUrl);
+        if (assetVersion) {
+            try {
+                const params = url.searchParams;
+                if (!params.has('v')) {
+                    params.append('v', assetVersion);
+                }
+                return url.toString();
+            } catch (paramError) {
+                console.warn('Falling back to manual cache busting for asset:', relativePath, paramError);
+                const separator = url.search ? '&' : '?';
+                return `${url.toString()}${separator}v=${assetVersion}`;
+            }
+        }
+
+        return url.toString();
     } catch (error) {
         console.error('Failed to resolve asset path:', error);
         return relativePath;
