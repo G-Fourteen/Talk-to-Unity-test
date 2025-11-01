@@ -5,11 +5,6 @@ const indicatorText = muteIndicator?.querySelector('.indicator-text') ?? null;
 const aiCircle = document.querySelector('[data-role="ai"]');
 const userCircle = document.querySelector('[data-role="user"]');
 
-if (heroImage) {
-    heroImage.setAttribute('crossorigin', 'anonymous');
-    heroImage.decoding = 'async';
-}
-
 const bodyElement = document.body;
 if (bodyElement) {
     bodyElement.classList.remove('no-js');
