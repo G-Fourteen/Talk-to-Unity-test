@@ -1,4 +1,5 @@
 const background = document.getElementById('background');
+const backgroundImage = document.getElementById('background-image');
 const muteIndicator = document.getElementById('mute-indicator');
 const indicatorText = muteIndicator?.querySelector('.indicator-text') ?? null;
 const aiCircle = document.querySelector('[data-role="ai"]');
@@ -163,19 +164,31 @@ async function setMutedState(muted, { announce = false } = {}) {
     }
 }
 
-function applyTheme(theme, { announce = false } = {}) {
+function applyTheme(theme, { announce = false, force = false } = {}) {
     const normalizedTheme = theme === 'light' ? 'light' : 'dark';
     const body = document.body;
+    const root = document.documentElement;
 
     if (!body) {
         currentTheme = normalizedTheme;
+        if (root) {
+            root.dataset.theme = normalizedTheme;
+        }
         return;
     }
 
-    const wasThemeChanged = currentTheme !== normalizedTheme || body.dataset.theme !== normalizedTheme;
+    const previousTheme = currentTheme;
+    const wasThemeChanged =
+        force ||
+        previousTheme !== normalizedTheme ||
+        body.dataset.theme !== normalizedTheme ||
+        (root?.dataset.theme ?? previousTheme) !== normalizedTheme;
 
     currentTheme = normalizedTheme;
     body.dataset.theme = normalizedTheme;
+    if (root) {
+        root.dataset.theme = normalizedTheme;
+    }
 
     if (announce) {
         if (!wasThemeChanged) {
@@ -191,7 +204,15 @@ function setCircleState(circle, { speaking = false, listening = false, error = f
         return;
     }
 
-    circle.classList.toggle('is-speaking', speaking);
+    if (speaking) {
+        if (circle.classList.contains('is-speaking')) {
+            circle.classList.remove('is-speaking');
+            void circle.offsetWidth;
+        }
+        circle.classList.add('is-speaking');
+    } else {
+        circle.classList.remove('is-speaking');
+    }
     circle.classList.toggle('is-listening', listening);
     circle.classList.toggle('is-error', error);
 
@@ -456,8 +477,8 @@ function sanitizeForSpeech(text) {
     }
 
     const withoutPollinations = text
-        .replace(/https?:\/\/\S*image\.pollinations\.ai\S*/gi, '')
-        .replace(/\b\S*image\.pollinations\.ai\S*\b/gi, '');
+        .replace(/https?:\/\/\S*images?\.pollinations\.ai\S*/gi, '')
+        .replace(/\b\S*images?\.pollinations\.ai\S*\b/gi, '');
 
     const withoutMarkdownTargets = removeMarkdownLinkTargets(withoutPollinations);
 
@@ -504,8 +525,8 @@ function sanitizeImageUrl(rawUrl) {
 
     return rawUrl
         .trim()
-        .replace(/^["'<\[(]+/, '')
-        .replace(/["'>)\]]+$/, '')
+        .replace(/^["'<\[({]+/, '')
+        .replace(/["'>)\]}]+$/, '')
         .replace(/[,.;!]+$/, '');
 }
 
@@ -525,6 +546,51 @@ function extractImageUrl(text) {
     }
 
     return '';
+}
+
+function escapeRegExp(value) {
+    return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function removeImageReferences(text, imageUrl) {
+    if (typeof text !== 'string') {
+        return '';
+    }
+
+    if (!imageUrl) {
+        return text.trim();
+    }
+
+    const sanitizedUrl = sanitizeImageUrl(imageUrl);
+    if (!sanitizedUrl) {
+        return text.trim();
+    }
+
+    let result = text;
+    const escapedUrl = escapeRegExp(sanitizedUrl);
+
+    const markdownImageRegex = new RegExp(`!\\[[^\\]]*\\]\\(${escapedUrl}\\)`, 'gi');
+    result = result.replace(markdownImageRegex, '');
+
+    const markdownLinkRegex = new RegExp(`\\[[^\\]]*\\]\\(${escapedUrl}\\)`, 'gi');
+    result = result.replace(markdownLinkRegex, '');
+
+    const rawUrlRegex = new RegExp(escapedUrl, 'gi');
+    result = result.replace(rawUrlRegex, '');
+
+    result = result
+        .replace(/\bimage\s+url\s*:?/gi, '')
+        .replace(/\bimage\s+link\s*:?/gi, '')
+        .replace(/\bart(?:work)?\s+(?:url|link)\s*:?/gi, '')
+        .replace(/<\s*>/g, '')
+        .replace(/\(\s*\)/g, '')
+        .replace(/\[\s*\]/g, '');
+
+    return result
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\s+([.,!?;:])/g, '$1')
+        .trim();
 }
 
 function normalizeCommandValue(value) {
@@ -657,17 +723,6 @@ function speak(text) {
     synth.speak(utterance);
 }
 
-
-function applyTheme(theme, { force = false } = {}) {
-    const normalizedTheme = theme === 'light' ? 'light' : 'dark';
-
-    if (!force && normalizedTheme === currentTheme) {
-        return;
-    }
-
-    currentTheme = normalizedTheme;
-    document.documentElement.dataset.theme = normalizedTheme;
-}
 
 function handleVoiceCommand(command) {
     const lowerCaseCommand = command.toLowerCase();
@@ -873,18 +928,25 @@ async function getAIResponse(userInput) {
         }
 
         const assistantMessage = cleanedText || aiText;
-        chatHistory.push({ role: 'assistant', content: assistantMessage });
+        const imageUrlFromResponse = extractImageUrl(aiText) || extractImageUrl(assistantMessage);
+        const assistantMessageWithoutImage = imageUrlFromResponse
+            ? removeImageReferences(assistantMessage, imageUrlFromResponse)
+            : assistantMessage;
+
+        const finalAssistantMessage = assistantMessageWithoutImage.replace(/\n{3,}/g, '\n\n').trim();
+        const chatAssistantMessage = finalAssistantMessage || '[image]';
+
+        chatHistory.push({ role: 'assistant', content: chatAssistantMessage });
 
         const shouldSuppressSpeech = commands.includes('shutup') || commands.includes('stop_speaking');
 
         if (!shouldSuppressSpeech) {
-            const spokenText = sanitizeForSpeech(assistantMessage);
+            const spokenText = sanitizeForSpeech(finalAssistantMessage);
             if (spokenText) {
                 speak(spokenText);
             }
         }
 
-        const imageUrlFromResponse = extractImageUrl(aiText) || extractImageUrl(assistantMessage);
         if (imageUrlFromResponse) {
             updateBackgroundImage(imageUrlFromResponse);
         }
@@ -909,16 +971,15 @@ function getImageUrl() {
         return currentBackgroundUrl;
     }
 
-    if (!background) {
-        return '';
+    if (backgroundImage?.getAttribute('src')) {
+        return backgroundImage.getAttribute('src');
     }
-    const style = window.getComputedStyle(background);
-    const backgroundImage = style.getPropertyValue('background-image');
-    return backgroundImage.slice(5, -2);
+
+    return '';
 }
 
 function updateBackgroundImage(imageUrl) {
-    if (!background || !imageUrl) {
+    if (!background || !backgroundImage || !imageUrl) {
         return;
     }
 
@@ -926,9 +987,14 @@ function updateBackgroundImage(imageUrl) {
         return;
     }
 
+    const hadImage = background.classList.contains('has-image');
+
     pendingBackgroundUrl = imageUrl;
     background.dataset.state = 'loading';
-    background.classList.remove('has-image');
+    if (!hadImage) {
+        background.classList.remove('has-image');
+        backgroundImage.removeAttribute('src');
+    }
 
     const image = new Image();
     image.decoding = 'async';
@@ -941,7 +1007,7 @@ function updateBackgroundImage(imageUrl) {
 
         currentBackgroundUrl = imageUrl;
         pendingBackgroundUrl = '';
-        background.style.backgroundImage = `url("${imageUrl}")`;
+        backgroundImage.src = imageUrl;
         background.dataset.state = 'loaded';
         background.classList.add('has-image');
     };
@@ -950,8 +1016,13 @@ function updateBackgroundImage(imageUrl) {
         if (pendingBackgroundUrl === imageUrl) {
             pendingBackgroundUrl = '';
         }
-        background.dataset.state = 'error';
-        background.classList.remove('has-image');
+        if (!hadImage) {
+            background.dataset.state = 'error';
+            background.classList.remove('has-image');
+            backgroundImage.removeAttribute('src');
+        } else {
+            background.dataset.state = 'loaded';
+        }
         console.error('Failed to load background image:', error);
     };
 
