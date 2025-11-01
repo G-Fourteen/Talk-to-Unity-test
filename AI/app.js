@@ -45,11 +45,31 @@ class SpeechRecognitionAdapter {
             this.recognition.lang = 'en-US';
             this.recognition.interimResults = false;
             this.recognition.maxAlternatives = 1;
-        } else if (window.Vosklet) {
-            this.recognition = new window.Vosklet();
-        } else {
-            throw new Error('Speech recognition is not supported in this browser.');
-        }
+            if (window.Vosklet) {
+                console.log("Initializing Vosklet for speech recognition.");
+                this.isVosklet = true;
+                const loadingIndicator = document.getElementById('loading-indicator');
+                if (loadingIndicator) loadingIndicator.hidden = false;
+
+                const model = await window.Vosklet.loadModel('https://unpkg.com/vosk-model-small-en-us@0.15.0/dist/vosk-model-small-en-us.tar.gz');
+                this.recognition = new model.Recognizer();
+
+                if (loadingIndicator) loadingIndicator.hidden = true;
+
+                this.recognition.onrecognition = (e) => {
+                    if (e.result.text) {
+                        const simulatedEvent = {
+                            results: [[{ transcript: e.result.text, confidence: 1 }]],
+                            resultIndex: 0
+                        };
+                        this.onresult(simulatedEvent);
+                    }
+                    this.onspeechend();
+                };
+
+            } else {
+                throw new Error('Vosklet failed to initialize.');
+            }
     }
 
     start() {
