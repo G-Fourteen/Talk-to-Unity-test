@@ -12,6 +12,7 @@ let isMuted = true;
 let hasMicPermission = false;
 let currentBackgroundUrl = '';
 let pendingBackgroundUrl = '';
+let currentTheme = 'dark';
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
@@ -51,11 +52,138 @@ function resolveAssetPath(relativePath) {
 }
 
 window.addEventListener('load', async () => {
+    applyTheme(currentTheme);
     await loadSystemPrompt();
     setupSpeechRecognition();
     updateMuteIndicator();
     await initializeVoiceControl();
 });
+
+async function setMutedState(muted, { announce = false } = {}) {
+    if (!recognition) {
+        isMuted = muted;
+        updateMuteIndicator();
+        if (muted) {
+            setCircleState(userCircle, {
+                listening: false,
+                speaking: false,
+                label: 'Microphone is muted'
+            });
+            if (announce) {
+                speak('Microphone muted.');
+            }
+        } else {
+            setCircleState(userCircle, {
+                listening: true,
+                label: 'Listening for your voice'
+            });
+            if (announce) {
+                speak('Microphone unmuted.');
+            }
+        }
+        return;
+    }
+
+    if (muted) {
+        if (!isMuted) {
+            isMuted = true;
+            setCircleState(userCircle, {
+                listening: false,
+                speaking: false,
+                label: 'Microphone is muted'
+            });
+            updateMuteIndicator();
+            try {
+                recognition.stop();
+            } catch (error) {
+                console.error('Failed to stop recognition:', error);
+            }
+        } else {
+            updateMuteIndicator();
+        }
+
+        if (announce) {
+            speak('Microphone muted.');
+        }
+
+        return;
+    }
+
+    if (!hasMicPermission) {
+        hasMicPermission = await requestMicPermission();
+        if (!hasMicPermission) {
+            updateMuteIndicator();
+            if (announce) {
+                speak('Microphone permission is required to unmute.');
+            }
+            return;
+        }
+    }
+
+    if (!isMuted) {
+        setCircleState(userCircle, {
+            listening: true,
+            label: 'Listening for your voice'
+        });
+        updateMuteIndicator();
+
+        if (announce) {
+            speak('Microphone is already listening.');
+        }
+        return;
+    }
+
+    isMuted = false;
+    setCircleState(userCircle, {
+        listening: true,
+        label: 'Listening for your voice'
+    });
+    updateMuteIndicator();
+
+    try {
+        recognition.start();
+    } catch (error) {
+        console.error('Failed to start recognition:', error);
+        setCircleState(userCircle, {
+            error: true,
+            listening: false,
+            label: 'Unable to start microphone recognition'
+        });
+        isMuted = true;
+        updateMuteIndicator();
+        if (announce) {
+            speak('Unable to start microphone recognition.');
+        }
+        return;
+    }
+
+    if (announce) {
+        speak('Microphone unmuted.');
+    }
+}
+
+function applyTheme(theme, { announce = false } = {}) {
+    const normalizedTheme = theme === 'light' ? 'light' : 'dark';
+    const body = document.body;
+
+    if (!body) {
+        currentTheme = normalizedTheme;
+        return;
+    }
+
+    const wasThemeChanged = currentTheme !== normalizedTheme || body.dataset.theme !== normalizedTheme;
+
+    currentTheme = normalizedTheme;
+    body.dataset.theme = normalizedTheme;
+
+    if (announce) {
+        if (!wasThemeChanged) {
+            speak(normalizedTheme === 'light' ? 'Light theme is already active.' : 'Dark theme is already active.');
+        } else {
+            speak(normalizedTheme === 'light' ? 'Light theme activated.' : 'Dark theme activated.');
+        }
+    }
+}
 
 function setCircleState(circle, { speaking = false, listening = false, error = false, label = '' } = {}) {
     if (!circle) {
@@ -248,41 +376,7 @@ function updateMuteIndicator() {
 }
 
 async function attemptUnmute() {
-    if (!recognition) {
-        return;
-    }
-
-    if (!hasMicPermission) {
-        hasMicPermission = await requestMicPermission();
-        if (!hasMicPermission) {
-            alert('Microphone access is required for voice control.');
-            return;
-        }
-    }
-
-    if (!isMuted) {
-        return;
-    }
-
-    isMuted = false;
-    setCircleState(userCircle, {
-        listening: true,
-        label: 'Listening for your voice'
-    });
-    updateMuteIndicator();
-
-    try {
-        recognition.start();
-    } catch (error) {
-        console.error('Failed to start recognition:', error);
-        setCircleState(userCircle, {
-            error: true,
-            listening: false,
-            label: 'Unable to start microphone recognition'
-        });
-        isMuted = true;
-        updateMuteIndicator();
-    }
+    await setMutedState(false);
 }
 
 function handleMuteToggle(event) {
@@ -293,17 +387,7 @@ function handleMuteToggle(event) {
         return;
     }
 
-    isMuted = true;
-    setCircleState(userCircle, {
-        listening: false,
-        speaking: false,
-        label: 'Microphone is muted'
-    });
-    updateMuteIndicator();
-
-    if (recognition) {
-        recognition.stop();
-    }
+    setMutedState(true);
 }
 
 muteIndicator?.addEventListener('click', handleMuteToggle);
@@ -321,22 +405,70 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
+function removeCommandTags(text) {
+    if (typeof text !== 'string') {
+        return '';
+    }
+
+    return text.replace(/\[(?:command|action):[^\]]+\]/gi, ' ');
+}
+
+function tokenLooksLikeUrl(token) {
+    if (!token) {
+        return false;
+    }
+
+    const trimmedToken = token.trim();
+
+    if (!trimmedToken) {
+        return false;
+    }
+
+    const sanitizedToken = trimmedToken
+        .replace(/^[([{<'"`]+/, '')
+        .replace(/[)\]>'"`.,!?;:]+$/g, '')
+        .toLowerCase();
+
+    if (!sanitizedToken) {
+        return false;
+    }
+
+    if (sanitizedToken.startsWith('http://') || sanitizedToken.startsWith('https://')) {
+        return true;
+    }
+
+    if (sanitizedToken.startsWith('www.')) {
+        return true;
+    }
+
+    if (sanitizedToken.includes('://')) {
+        return true;
+    }
+
+    if (sanitizedToken.includes('.') && sanitizedToken.includes('/') && /^[a-z0-9_./-]+$/i.test(sanitizedToken)) {
+        return true;
+    }
+
+    return false;
+}
+
 function sanitizeForSpeech(text) {
     if (typeof text !== 'string') {
         return '';
     }
 
-    const withoutUrls = text
-        .replace(/\bhttps?:\/\/\S+/gi, '')
-        .replace(/\bwww\.[^\s]+/gi, '');
+    const withoutCommands = removeCommandTags(text);
 
-    return withoutUrls.replace(/\s{2,}/g, ' ').trim();
+    const sanitizedTokens = withoutCommands
+        .split(/\s+/)
+        .filter((token) => token && !tokenLooksLikeUrl(token));
+
+    return sanitizedTokens.join(' ').trim();
 }
 
 function speak(text) {
     if (synth.speaking) {
-        console.error('Speech synthesis is already speaking.');
-        return;
+        synth.cancel();
     }
 
     const sanitizedText = sanitizeForSpeech(text);
@@ -376,39 +508,92 @@ function speak(text) {
     synth.speak(utterance);
 }
 
+function parseAiDirectives(text) {
+    if (typeof text !== 'string') {
+        return { cleanedText: '', commands: [] };
+    }
+
+    const commands = [];
+    const directivePattern = /\[(?:command|action):([a-z-]+)\]|<(?:command|action):([a-z-]+)>/gi;
+
+    const cleanedText = text.replace(directivePattern, (_, squareMatch, angleMatch) => {
+        const commandName = (squareMatch || angleMatch || '').toLowerCase();
+        if (commandName) {
+            commands.push(commandName);
+        }
+
+        return ' ';
+    });
+
+    return {
+        cleanedText: cleanedText.replace(/\s{2,}/g, ' ').trim(),
+        commands
+    };
+}
+
+async function executeAiCommand(command) {
+    if (!command) {
+        return;
+    }
+
+    const normalizedCommand = command.trim().toLowerCase();
+
+    switch (normalizedCommand) {
+        case 'mute':
+            await setMutedState(true, { announce: false });
+            break;
+        case 'unmute':
+            await setMutedState(false, { announce: false });
+            break;
+        case 'shutup':
+            synth.cancel();
+            setCircleState(aiCircle, {
+                speaking: false,
+                label: 'Unity is idle'
+            });
+            break;
+        case 'copy-image':
+            await copyImageToClipboard();
+            break;
+        case 'save-image':
+            await saveImage();
+            break;
+        case 'open-image':
+            openImageInNewTab();
+            break;
+        case 'clear-chat':
+            chatHistory = [];
+            break;
+        case 'light-mode':
+            applyTheme('light');
+            break;
+        case 'dark-mode':
+            applyTheme('dark');
+            break;
+        default:
+            break;
+    }
+}
+
 function handleVoiceCommand(command) {
     const lowerCaseCommand = command.toLowerCase();
 
-    if (lowerCaseCommand.includes('mute my mic') || lowerCaseCommand.includes('mute microphone')) {
-        isMuted = true;
-        updateMuteIndicator();
-        setCircleState(userCircle, {
-            listening: false,
-            speaking: false,
-            label: 'Microphone is muted'
-        });
-        if (recognition) {
-            recognition.stop();
-        }
-        speak('Microphone muted.');
+    if (
+        lowerCaseCommand.includes('mute my mic') ||
+        lowerCaseCommand.includes('mute microphone') ||
+        lowerCaseCommand === 'mute'
+    ) {
+        setMutedState(true, { announce: true });
         return true;
     }
 
-    if (lowerCaseCommand.includes('unmute my mic') || lowerCaseCommand.includes('unmute microphone')) {
-        isMuted = false;
-        updateMuteIndicator();
-        setCircleState(userCircle, {
-            listening: true,
-            label: 'Listening for your voice'
-        });
-        if (recognition) {
-            try {
-                recognition.start();
-            } catch (error) {
-                console.error('Failed to start recognition:', error);
-            }
-        }
-        speak('Microphone unmuted.');
+    if (
+        lowerCaseCommand.includes('unmute my mic') ||
+        lowerCaseCommand.includes('unmute microphone') ||
+        lowerCaseCommand.includes('turn on the mic') ||
+        lowerCaseCommand === 'unmute'
+    ) {
+        setMutedState(false, { announce: true });
         return true;
     }
 
@@ -418,6 +603,24 @@ function handleVoiceCommand(command) {
             speaking: false,
             label: 'Unity is idle'
         });
+        return true;
+    }
+
+    if (
+        lowerCaseCommand.includes('light mode') ||
+        lowerCaseCommand.includes('light theme') ||
+        lowerCaseCommand.includes('day mode')
+    ) {
+        applyTheme('light', { announce: true });
+        return true;
+    }
+
+    if (
+        lowerCaseCommand.includes('dark mode') ||
+        lowerCaseCommand.includes('dark theme') ||
+        lowerCaseCommand.includes('night mode')
+    ) {
+        applyTheme('dark', { announce: true });
         return true;
     }
 
@@ -457,7 +660,8 @@ function handleVoiceCommand(command) {
     if (
         lowerCaseCommand.includes('clear history') ||
         lowerCaseCommand.includes('delete history') ||
-        lowerCaseCommand.includes('clear chat')
+        lowerCaseCommand.includes('clear chat') ||
+        lowerCaseCommand.includes('clear hisstory')
     ) {
         chatHistory = [];
         speak('Chat history cleared.');
@@ -542,8 +746,21 @@ async function getAIResponse(userInput) {
             throw new Error('Received empty response from Pollinations AI');
         }
 
-        chatHistory.push({ role: 'assistant', content: aiText });
-        speak(aiText);
+        const { cleanedText, commands } = parseAiDirectives(aiText);
+
+        for (const command of commands) {
+            await executeAiCommand(command);
+        }
+
+        const assistantMessage = cleanedText || aiText;
+        chatHistory.push({ role: 'assistant', content: assistantMessage });
+
+        if (!commands.includes('shutup')) {
+            const spokenText = sanitizeForSpeech(assistantMessage);
+            if (spokenText) {
+                speak(spokenText);
+            }
+        }
     } catch (error) {
         console.error('Error getting text from Pollinations AI:', error);
         setCircleState(aiCircle, {
