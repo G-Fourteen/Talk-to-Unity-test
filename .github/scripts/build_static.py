@@ -12,6 +12,13 @@ def copy_static_files(dist: Path) -> list[str]:
                 destination = dist / source.name
                 shutil.copy2(source, destination)
                 copied.append(str(source))
+    extra_files = [Path("ai-instruct.txt")]
+    for file_path in extra_files:
+        if file_path.exists() and file_path.is_file():
+            destination = dist / file_path.name
+            shutil.copy2(file_path, destination)
+            copied.append(str(file_path))
+
     assets_dir = Path("assets")
     if assets_dir.exists() and assets_dir.is_dir():
         target_dir = dist / assets_dir.name
