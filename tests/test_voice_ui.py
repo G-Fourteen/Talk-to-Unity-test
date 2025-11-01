@@ -155,6 +155,94 @@ STUB_SCRIPT = """
 """
 
 
+STUB_SCRIPT_NO_RECOGNITION = """
+(() => {
+    const state = {
+        speakCalls: [],
+        recognitionStartCalls: 0,
+        recognitionStopCalls: 0,
+        getUserMediaCalls: 0
+    };
+
+    Object.defineProperty(window, "__testState", {
+        value: state,
+        configurable: false,
+        writable: false
+    });
+
+    delete window.SpeechRecognition;
+    delete window.webkitSpeechRecognition;
+
+    const synth = window.speechSynthesis;
+    if (synth) {
+        try {
+            synth.getVoices = () => [];
+        } catch (error) {
+            console.warn("Unable to override getVoices", error);
+        }
+
+        try {
+            Object.defineProperty(synth, "speaking", {
+                configurable: true,
+                get() {
+                    return false;
+                }
+            });
+        } catch (error) {
+            console.warn("Unable to redefine speaking property", error);
+        }
+
+        const stubbedSpeak = (utterance) => {
+            const spoken =
+                typeof utterance === "string"
+                    ? utterance
+                    : typeof utterance?.text === "string"
+                    ? utterance.text
+                    : "";
+            state.speakCalls.push(spoken);
+        };
+
+        try {
+            synth.speak = stubbedSpeak;
+        } catch (error) {
+            try {
+                Object.defineProperty(synth, "speak", {
+                    configurable: true,
+                    writable: true,
+                    value: stubbedSpeak
+                });
+            } catch (defineError) {
+                console.warn("Unable to override speechSynthesis.speak", defineError);
+            }
+        }
+
+        try {
+            synth.cancel = () => {};
+        } catch (error) {
+            console.warn("Unable to override speechSynthesis.cancel", error);
+        }
+    }
+
+    if (!navigator.mediaDevices) {
+        navigator.mediaDevices = {};
+    }
+
+    navigator.mediaDevices.getUserMedia = function () {
+        state.getUserMediaCalls += 1;
+        return Promise.resolve({
+            getTracks() {
+                return [
+                    {
+                        stop() {}
+                    }
+                ];
+            }
+        });
+    };
+})();
+"""
+
+
 def launch_chromium(playwright):
     try:
         return playwright.chromium.launch()
@@ -172,6 +260,20 @@ def loaded_page():
         context = browser.new_context(ignore_https_errors=True)
         page = context.new_page()
         page.add_init_script(STUB_SCRIPT)
+        page.goto(SITE_URL, wait_until="load")
+        page.wait_for_selector("#mute-indicator")
+        yield page
+        context.close()
+        browser.close()
+
+
+@pytest.fixture
+def page_without_recognition():
+    with sync_playwright() as playwright:
+        browser = launch_chromium(playwright)
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
+        page.add_init_script(STUB_SCRIPT_NO_RECOGNITION)
         page.goto(SITE_URL, wait_until="load")
         page.wait_for_selector("#mute-indicator")
         yield page
@@ -203,6 +305,17 @@ def test_unmute_requests_microphone_permission_once(loaded_page):
     page.evaluate("window.__testState.getUserMediaCalls = 0")
     page.dispatch_event("body", "click")
     page.wait_for_function("() => window.__testState.getUserMediaCalls === 1")
+
+
+def test_mute_button_requests_permission_without_recognition(page_without_recognition):
+    page = page_without_recognition
+    page.evaluate("window.__testState.getUserMediaCalls = 0")
+    page.click("#mute-indicator")
+    page.wait_for_function("() => window.__testState.getUserMediaCalls === 1")
+
+    indicator_text = page.text_content("#mute-indicator .indicator-text")
+    assert indicator_text is not None
+    assert "Voice recognition unavailable" in indicator_text
 
 
 def test_voice_prompts_announce_theme_changes(loaded_page):
