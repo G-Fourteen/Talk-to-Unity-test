@@ -2,7 +2,7 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 
-SITE_URL = "http://www.unityailab.com/Talk-to-Unity/"
+SITE_URL = "http://localhost:8001/index.html"
 
 
 STUB_SCRIPT = """
