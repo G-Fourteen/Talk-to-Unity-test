@@ -10,6 +10,8 @@ let systemPrompt = '';
 let recognition = null;
 let isMuted = true;
 let hasMicPermission = false;
+let currentBackgroundUrl = '';
+let pendingBackgroundUrl = '';
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
@@ -547,21 +549,56 @@ async function getAIResponse(userInput) {
         const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
             userInput
         )}?model=${currentImageModel}&referrer=unityailab.com`;
-        if (background) {
-            background.style.backgroundImage = `url(${imageUrl})`;
-        }
+        updateBackgroundImage(imageUrl);
     } catch (error) {
         console.error('Error getting image from Pollinations AI:', error);
     }
 }
 
 function getImageUrl() {
+    if (currentBackgroundUrl) {
+        return currentBackgroundUrl;
+    }
+
     if (!background) {
         return '';
     }
     const style = window.getComputedStyle(background);
     const backgroundImage = style.getPropertyValue('background-image');
     return backgroundImage.slice(5, -2);
+}
+
+function updateBackgroundImage(imageUrl) {
+    if (!background || !imageUrl) {
+        return;
+    }
+
+    if (imageUrl === currentBackgroundUrl) {
+        return;
+    }
+
+    pendingBackgroundUrl = imageUrl;
+
+    const image = new Image();
+
+    image.onload = () => {
+        if (pendingBackgroundUrl !== imageUrl) {
+            return;
+        }
+
+        currentBackgroundUrl = imageUrl;
+        pendingBackgroundUrl = '';
+        background.style.backgroundImage = `url("${imageUrl}")`;
+    };
+
+    image.onerror = (error) => {
+        if (pendingBackgroundUrl === imageUrl) {
+            pendingBackgroundUrl = '';
+        }
+        console.error('Failed to load background image:', error);
+    };
+
+    image.src = imageUrl;
 }
 
 async function copyImageToClipboard() {
