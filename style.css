@@ -77,12 +77,12 @@ html {
     background-repeat: no-repeat;
     opacity: 0;
     transition: opacity 0.6s ease;
-    z-index: 1;
+    z-index: 999;
     pointer-events: none;
 }
 
 #background.has-image {
-    opacity: 1;
+    opacity: 0.95;
 }
 
 .status-banner {
