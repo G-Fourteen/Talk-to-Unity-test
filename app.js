@@ -477,8 +477,8 @@ function sanitizeForSpeech(text) {
     }
 
     const withoutPollinations = text
-        .replace(/https?:\/\/\S*image\.pollinations\.ai\S*/gi, '')
-        .replace(/\b\S*image\.pollinations\.ai\S*\b/gi, '');
+        .replace(/https?:\/\/\S*images?\.pollinations\.ai\S*/gi, '')
+        .replace(/\b\S*images?\.pollinations\.ai\S*\b/gi, '');
 
     const withoutMarkdownTargets = removeMarkdownLinkTargets(withoutPollinations);
 
@@ -525,8 +525,8 @@ function sanitizeImageUrl(rawUrl) {
 
     return rawUrl
         .trim()
-        .replace(/^["'<\[(]+/, '')
-        .replace(/["'>)\]]+$/, '')
+        .replace(/^["'<\[({]+/, '')
+        .replace(/["'>)\]}]+$/, '')
         .replace(/[,.;!]+$/, '');
 }
 
@@ -546,6 +546,51 @@ function extractImageUrl(text) {
     }
 
     return '';
+}
+
+function escapeRegExp(value) {
+    return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function removeImageReferences(text, imageUrl) {
+    if (typeof text !== 'string') {
+        return '';
+    }
+
+    if (!imageUrl) {
+        return text.trim();
+    }
+
+    const sanitizedUrl = sanitizeImageUrl(imageUrl);
+    if (!sanitizedUrl) {
+        return text.trim();
+    }
+
+    let result = text;
+    const escapedUrl = escapeRegExp(sanitizedUrl);
+
+    const markdownImageRegex = new RegExp(`!\\[[^\\]]*\\]\\(${escapedUrl}\\)`, 'gi');
+    result = result.replace(markdownImageRegex, '');
+
+    const markdownLinkRegex = new RegExp(`\\[[^\\]]*\\]\\(${escapedUrl}\\)`, 'gi');
+    result = result.replace(markdownLinkRegex, '');
+
+    const rawUrlRegex = new RegExp(escapedUrl, 'gi');
+    result = result.replace(rawUrlRegex, '');
+
+    result = result
+        .replace(/\bimage\s+url\s*:?/gi, '')
+        .replace(/\bimage\s+link\s*:?/gi, '')
+        .replace(/\bart(?:work)?\s+(?:url|link)\s*:?/gi, '')
+        .replace(/<\s*>/g, '')
+        .replace(/\(\s*\)/g, '')
+        .replace(/\[\s*\]/g, '');
+
+    return result
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\s+([.,!?;:])/g, '$1')
+        .trim();
 }
 
 function normalizeCommandValue(value) {
@@ -883,18 +928,25 @@ async function getAIResponse(userInput) {
         }
 
         const assistantMessage = cleanedText || aiText;
-        chatHistory.push({ role: 'assistant', content: assistantMessage });
+        const imageUrlFromResponse = extractImageUrl(aiText) || extractImageUrl(assistantMessage);
+        const assistantMessageWithoutImage = imageUrlFromResponse
+            ? removeImageReferences(assistantMessage, imageUrlFromResponse)
+            : assistantMessage;
+
+        const finalAssistantMessage = assistantMessageWithoutImage.replace(/\n{3,}/g, '\n\n').trim();
+        const chatAssistantMessage = finalAssistantMessage || '[image]';
+
+        chatHistory.push({ role: 'assistant', content: chatAssistantMessage });
 
         const shouldSuppressSpeech = commands.includes('shutup') || commands.includes('stop_speaking');
 
         if (!shouldSuppressSpeech) {
-            const spokenText = sanitizeForSpeech(assistantMessage);
+            const spokenText = sanitizeForSpeech(finalAssistantMessage);
             if (spokenText) {
                 speak(spokenText);
             }
         }
 
-        const imageUrlFromResponse = extractImageUrl(aiText) || extractImageUrl(assistantMessage);
         if (imageUrlFromResponse) {
             updateBackgroundImage(imageUrlFromResponse);
         }
