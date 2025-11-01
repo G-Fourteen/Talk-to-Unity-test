@@ -61,11 +61,11 @@ body[data-app-state='experience'] #hero-stage img {
 }
 
 body[data-app-state='experience'] .voice-stage {
-    background: transparent;
-    border: none;
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
     box-shadow: none;
-    border-radius: 0;
-    padding: 0;
+    border-radius: clamp(24px, 6vw, 40px);
+    padding: clamp(32px, 8vw, 56px);
     gap: clamp(32px, 10vw, 140px);
     margin-top: clamp(32px, 10vh, 96px);
 }
