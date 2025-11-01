@@ -1,4 +1,5 @@
-name: Build, Test, and Publish
+name: Unified Build, Test, and Deploy
+
 
 on:
   push:
@@ -14,34 +15,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pipeline:
+  ci:
+    name: Build, Test, and Package
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Set up Python environment
+        uses: ./.github/actions/setup-python-playwright
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
-
-      - name: Run test suite
-        run: pytest --color=yes
-
-      - name: Build static site assets
+      - name: Build static site
+        id: build_site
+        continue-on-error: true
         run: python .github/scripts/build_static.py
 
-      - name: Publish to GitHub Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build_site.outcome == 'success'
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: dist
-          force_orphan: true
-          commit_message: Deploy updated static site
+          path: dist
+
+      - name: Run tests
+        id: run_tests
+        if: always()
+        continue-on-error: true
+        run: python .github/scripts/run_tests.py
+
+      - name: Publish workflow summary
+        if: always()
+        run: python .github/scripts/write_summary.py --include-build --include-tests
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build_site.outcome == 'success' && steps.run_tests.outcome == 'success'
+        uses: actions/deploy-pages@v4
+
+      - name: Fail workflow if build or tests failed
+        if: ${{ always() && (steps.build_site.outcome != 'success' || steps.run_tests.outcome != 'success') }}
+        run: exit 1
