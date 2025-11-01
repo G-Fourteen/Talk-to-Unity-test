@@ -245,9 +245,16 @@
         }
     }
 
+    const shouldAutoStartExperience = !launchButton && !landingSection;
+
     document.addEventListener('DOMContentLoaded', () => {
         evaluateDependencies();
-        void startApplication({ auto: true });
+
+        if (shouldAutoStartExperience) {
+            void startApplication();
+        } else {
+            void startApplication({ auto: true });
+        }
 
         launchButton?.addEventListener('click', () => {
             const { allMet } = evaluateDependencies({ announce: true });
@@ -381,8 +388,8 @@
             } else {
                 const summary = formatDependencyList(missing);
                 dependencySummary.textContent = summary
-                    ? `We spotted a few red lights (${summary}). Talk to Unity will still launch, but those features may be limited until they turn green.`
-                    : 'We spotted a few red lights. Talk to Unity will still launch, but some features may be limited.';
+                    ? `We spotted a few alerts (${summary}). Talk to Unity will still launch, but those features may be limited until they clear.`
+                    : 'We spotted a few alerts. Talk to Unity will still launch, but some features may be limited.';
             }
         }
 

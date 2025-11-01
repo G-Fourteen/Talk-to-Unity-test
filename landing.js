@@ -236,8 +236,8 @@ function updateDependencyUI(results, allMet, { announce = false, missing = [] } 
         } else {
             const summary = formatDependencyList(missing);
             dependencySummary.textContent = summary
-                ? `Red lights: ${summary}. Follow the fix steps below, then press "Check again."`
-                : 'Red lights detected. Follow the fix steps below, then press "Check again."';
+                ? `Alerts: ${summary}. Follow the fix steps below, then press "Check again."`
+                : 'Alerts detected. Follow the fix steps below, then press "Check again."';
         }
     }
 
