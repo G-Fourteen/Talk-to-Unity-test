@@ -458,6 +458,17 @@
 
     async function setMutedState(muted, { announce = false } = {}) {
         if (!recognition) {
+            if (!muted && !hasMicPermission) {
+                hasMicPermission = await requestMicPermission();
+                if (!hasMicPermission) {
+                    updateMuteIndicator();
+                    if (announce) {
+                        speak('Microphone permission is required to unmute.');
+                    }
+                    return false;
+                }
+            }
+
             isMuted = muted;
             updateMuteIndicator();
             if (muted) {
