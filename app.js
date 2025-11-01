@@ -5,6 +5,17 @@ const indicatorText = muteIndicator?.querySelector('.indicator-text') ?? null;
 const aiCircle = document.querySelector('[data-role="ai"]');
 const userCircle = document.querySelector('[data-role="user"]');
 
+if (heroImage) {
+    heroImage.setAttribute('crossorigin', 'anonymous');
+    heroImage.decoding = 'async';
+}
+
+const bodyElement = document.body;
+if (bodyElement) {
+    bodyElement.classList.remove('no-js');
+    bodyElement.classList.add('js-enabled');
+}
+
 let currentImageModel = 'flux';
 let chatHistory = [];
 let systemPrompt = '';
@@ -14,6 +25,7 @@ let hasMicPermission = false;
 let currentHeroUrl = '';
 let pendingHeroUrl = '';
 let currentTheme = 'dark';
+let recognitionRestartTimeout = null;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
@@ -298,16 +310,35 @@ function setupSpeechRecognition() {
             label: isMuted ? 'Microphone is muted' : 'Listening for your voice'
         });
 
+        if (recognitionRestartTimeout) {
+            clearTimeout(recognitionRestartTimeout);
+            recognitionRestartTimeout = null;
+        }
+
         if (!isMuted) {
-            try {
-                recognition.start();
-            } catch (error) {
-                console.error('Failed to restart recognition:', error);
-                setCircleState(userCircle, {
-                    error: true,
-                    label: 'Unable to restart microphone recognition'
-                });
-            }
+            recognitionRestartTimeout = window.setTimeout(() => {
+                recognitionRestartTimeout = null;
+                try {
+                    recognition.start();
+                } catch (error) {
+                    console.error('Failed to restart recognition:', error);
+                    setCircleState(userCircle, {
+                        error: true,
+                        label: 'Unable to restart microphone recognition'
+                    });
+
+                    if (!isMuted) {
+                        recognitionRestartTimeout = window.setTimeout(() => {
+                            recognitionRestartTimeout = null;
+                            try {
+                                recognition.start();
+                            } catch (retryError) {
+                                console.error('Retry to restart recognition failed:', retryError);
+                            }
+                        }, 800);
+                    }
+                }
+            }, 280);
         }
     };
 
@@ -559,6 +590,7 @@ function sanitizeForSpeech(text) {
 
         return part;
     });
+
     const commandTokens = [
         'open_image',
         'save_image',
@@ -604,6 +636,112 @@ function sanitizeImageUrl(rawUrl) {
         .replace(/^["'<\[({]+/, '')
         .replace(/["'>)\]}]+$/, '')
         .replace(/[,.;!]+$/, '');
+}
+
+const FALLBACK_IMAGE_KEYWORDS = [
+    'show',
+    'picture',
+    'image',
+    'photo',
+    'illustration',
+    'draw',
+    'paint',
+    'render',
+    'display',
+    'visual',
+    'wallpaper',
+    'generate'
+];
+
+function shouldRequestFallbackImage({ userInput = '', assistantMessage = '', fallbackPrompt = '', existingImageUrl = '' }) {
+    if (existingImageUrl || !fallbackPrompt) {
+        return false;
+    }
+
+    const combined = `${userInput} ${assistantMessage}`.toLowerCase();
+    if (combined.includes('[image]')) {
+        return true;
+    }
+
+    const keywordPattern = new RegExp(`\\b(?:${FALLBACK_IMAGE_KEYWORDS.join('|')})\\b`, 'i');
+    if (keywordPattern.test(combined)) {
+        return true;
+    }
+
+    const descriptiveCuePattern = /(here\s+(?:is|'s)|displaying|showing)\s+(?:an?\s+)?(?:image|picture|photo|visual)/i;
+    return descriptiveCuePattern.test(combined);
+}
+
+function cleanFallbackPrompt(text) {
+    return text
+        .replace(/^["'\s]+/, '')
+        .replace(/["'\s]+$/, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+function buildFallbackImagePrompt(userInput = '', assistantMessage = '') {
+    const sources = [assistantMessage, userInput];
+    for (const source of sources) {
+        if (!source) {
+            continue;
+        }
+
+        const explicitPromptMatch = source.match(/(?:image\s+prompt|prompt)\s*[:=]\s*"?([^"\n]+)"?/i);
+        if (explicitPromptMatch?.[1]) {
+            const sanitized = cleanFallbackPrompt(explicitPromptMatch[1]);
+            if (sanitized) {
+                return sanitized;
+            }
+        }
+    }
+
+    const rawCandidate = userInput || assistantMessage || '';
+    if (!rawCandidate) {
+        return '';
+    }
+
+    const cleaned = cleanFallbackPrompt(
+        rawCandidate
+            .replace(/\b(?:please|kindly)\b/gi, '')
+            .replace(/\b(?:can|could|would|will|may|might|let's)\b\s+(?:you\s+)?/gi, '')
+            .replace(
+                /\b(?:show|display|draw|paint|generate|create|make|produce|render|give|find|display)\b\s+(?:me\s+|us\s+)?/gi,
+                ''
+            )
+            .replace(
+                /\b(?:an?\s+)?(?:image|picture|photo|visual|illustration|render|drawing|art|shot|wallpaper)\b\s*(?:of|showing)?\s*/gi,
+                ''
+            )
+    );
+
+    if (!cleaned) {
+        return '';
+    }
+
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function buildPollinationsImageUrl(prompt, { model = currentImageModel } = {}) {
+    if (typeof prompt !== 'string') {
+        return '';
+    }
+
+    const sanitized = cleanFallbackPrompt(prompt);
+    if (!sanitized) {
+        return '';
+    }
+
+    const params = new URLSearchParams({
+        model: model || 'flux',
+        width: '1024',
+        height: '1024',
+        nologo: 'true',
+        enhance: 'true',
+        seed: Math.floor(Math.random() * 1_000_000_000).toString()
+    });
+
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(sanitized)}?${params.toString()}`;
 }
 
 function extractImageUrl(text) {
@@ -966,20 +1104,6 @@ function handleVoiceCommand(command) {
 const POLLINATIONS_TEXT_URL = 'https://text.pollinations.ai/openai';
 const UNITY_REFERRER = 'https://www.unityailab.com/';
 
-function shouldUseUnityReferrer() {
-    if (typeof window === 'undefined') {
-        return true;
-    }
-
-    try {
-        const unityOrigin = new URL(UNITY_REFERRER).origin;
-        return window.location.origin === unityOrigin;
-    } catch (error) {
-        console.error('Failed to parse UNITY_REFERRER:', error);
-        return false;
-    }
-}
-
 async function getAIResponse(userInput) {
     console.log(`Sending to AI: ${userInput}`);
 
@@ -999,15 +1123,6 @@ async function getAIResponse(userInput) {
             model: 'unity'
         });
 
-        const useUnityReferrer = shouldUseUnityReferrer();
-
-        if (!useUnityReferrer) {
-            console.warn(
-                'Pollinations referrer header disabled because the app is not '
-                + 'being served from https://www.unityailab.com/'
-            );
-        }
-
         const textResponse = await fetch(POLLINATIONS_TEXT_URL, {
             method: 'POST',
             headers: {
@@ -1019,12 +1134,6 @@ async function getAIResponse(userInput) {
             referrer: UNITY_REFERRER,
             referrerPolicy: 'strict-origin-when-cross-origin',
             body: pollinationsPayload,
-            ...(useUnityReferrer
-                ? {}
-                : {
-                      referrer: 'no-referrer',
-                      referrerPolicy: 'no-referrer'
-                  })
         });
 
         if (!textResponse.ok) {
@@ -1046,8 +1155,24 @@ async function getAIResponse(userInput) {
 
         const assistantMessage = cleanedText || aiText;
         const imageUrlFromResponse = extractImageUrl(aiText) || extractImageUrl(assistantMessage);
-        const assistantMessageWithoutImage = imageUrlFromResponse
-            ? removeImageReferences(assistantMessage, imageUrlFromResponse)
+
+        const fallbackPrompt = buildFallbackImagePrompt(userInput, assistantMessage);
+        let fallbackImageUrl = '';
+        if (
+            shouldRequestFallbackImage({
+                userInput,
+                assistantMessage,
+                fallbackPrompt,
+                existingImageUrl: imageUrlFromResponse
+            })
+        ) {
+            fallbackImageUrl = buildPollinationsImageUrl(fallbackPrompt, { model: currentImageModel });
+        }
+
+        const selectedImageUrl = imageUrlFromResponse || fallbackImageUrl;
+
+        const assistantMessageWithoutImage = selectedImageUrl
+            ? removeImageReferences(assistantMessage, selectedImageUrl)
             : assistantMessage;
 
         const finalAssistantMessage = assistantMessageWithoutImage.replace(/\n{3,}/g, '\n\n').trim();
@@ -1056,8 +1181,8 @@ async function getAIResponse(userInput) {
         chatHistory.push({ role: 'assistant', content: chatAssistantMessage });
 
         let heroImagePromise = Promise.resolve(false);
-        if (imageUrlFromResponse) {
-            heroImagePromise = updateHeroImage(imageUrlFromResponse);
+        if (selectedImageUrl) {
+            heroImagePromise = updateHeroImage(selectedImageUrl);
         }
 
         const shouldSuppressSpeech = commands.includes('shutup') || commands.includes('stop_speaking');
@@ -1124,7 +1249,7 @@ function updateHeroImage(imageUrl) {
     return new Promise((resolve) => {
         const image = new Image();
         image.decoding = 'async';
-        image.referrerPolicy = 'no-referrer';
+        image.crossOrigin = 'anonymous';
 
         image.onload = () => {
             if (pendingHeroUrl !== imageUrl) {
