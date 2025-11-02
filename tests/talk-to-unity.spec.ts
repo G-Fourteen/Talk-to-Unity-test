@@ -199,7 +199,7 @@ test('landing page loads and allows navigation to app', async ({ page }) => {
     const launchLink = page.locator('#launch-app');
     await expect(launchLink).toBeVisible();
     await expect(launchLink).toHaveText('Talk to Unity');
-    await expect(launchLink).toHaveAttribute('href', '/AI');
+    await expect(launchLink).toHaveAttribute('href', 'AI');
 });
 
 test('ai generates fallback imagery and applies theme commands', async ({ page }) => {
