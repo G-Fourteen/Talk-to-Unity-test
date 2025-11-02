@@ -107,6 +107,17 @@ class ElementState:
             self.classes.discard(name)
 
 
+class TestRecognitionStub:
+    def __init__(self, test_state: Dict[str, Any]) -> None:
+        self.state = test_state
+
+    def start(self) -> None:
+        self.state["recognitionStartCalls"] += 1
+
+    def stop(self) -> None:
+        self.state["recognitionStopCalls"] += 1
+
+
 class FakeVoiceLabApp:
     """Minimal simulation of the front-end logic needed for tests."""
 
@@ -124,6 +135,8 @@ class FakeVoiceLabApp:
         self.mute_indicator.dataset["state"] = "muted"
         self.indicator_text = ElementState("Tap or click anywhere to unmute")
 
+        self.recognition_stub = TestRecognitionStub(self.state)
+
     # Event handlers ------------------------------------------------------------------
 
     def handle_body_click(self) -> None:
@@ -140,7 +153,7 @@ class FakeVoiceLabApp:
     def set_muted_state(self, muted: bool, announce: bool = False) -> None:
         if muted:
             if not self.is_muted:
-                self.state["recognitionStopCalls"] += 1
+                self.recognition_stub.stop()
             self.is_muted = True
             self.user_circle.toggle_class("is-listening", False)
             self.mute_indicator.dataset["state"] = "muted"
@@ -149,7 +162,7 @@ class FakeVoiceLabApp:
                 self.speak("Microphone muted.")
         else:
             if self.is_muted:
-                self.state["recognitionStartCalls"] += 1
+                self.recognition_stub.start()
             self.is_muted = False
             self.user_circle.toggle_class("is-listening", True)
             self.mute_indicator.dataset["state"] = "listening"
@@ -267,14 +280,37 @@ class PageStub:
         if expression.startswith("setMutedState("):
             return self._call_set_muted_state(expression)
 
-        if expression.startswith("(async () =>"):
-            return self._call_async_block(expression)
+        if expression.startswith("speak("):
+            return self._call_speak(expression)
+
+        if expression.startswith("recognition.start()"):
+            self._ensure_app()
+            if self._app:
+                self._app.recognition_stub.start()
+            return None
+
+        if expression.startswith("recognition.stop()"):
+            self._ensure_app()
+            if self._app:
+                self._app.recognition_stub.stop()
+            return None
+
+        if expression.startswith("(async () =>"):             return self._call_async_block(expression)
 
         if expression.startswith("(() =>") or expression.startswith("() =>"):
             return self._evaluate_function(expression)
 
         if expression.startswith("window.__testState."):
             return self._resolve_test_state_value(expression[len("window.__testState.") :])
+
+        if expression.startswith("isMuted ="):
+            return self._assign_app_property(expression)
+
+        if expression.startswith("recognition.start()"):
+            return self._call_recognition_method("start")
+
+        if expression.startswith("recognition.stop()"):
+            return self._call_recognition_method("stop")
 
         raise NotImplementedError(f"Unsupported expression: {expression}")
 
@@ -286,12 +322,25 @@ class PageStub:
         value = self._parse_literal(right.strip().rstrip(";"))
         self._set_test_state_value(key_path, value)
 
+    def _assign_app_property(self, expression: str) -> None:
+        left, right = expression.split("=", 1)
+        prop_name = left.strip()
+        value = self._parse_literal(right.strip().rstrip(";"))
+        self._ensure_app()
+        if self._app and hasattr(self._app, prop_name):
+            setattr(self._app, prop_name, value)
+
     def _set_test_state_value(self, path: str, value: Any) -> None:
         target = self._test_state
         parts = [part.strip() for part in path.split(".") if part.strip()]
         for part in parts[:-1]:
             target = target[part]
         target[parts[-1]] = value
+
+    def _call_recognition_method(self, method_name: str) -> None:
+        self._ensure_app()
+        if self._app and hasattr(self._app.recognition_stub, method_name):
+            getattr(self._app.recognition_stub, method_name)()
 
     def _resolve_test_state_value(self, path: str) -> Any:
         value: Any = self._test_state
@@ -370,6 +419,12 @@ class PageStub:
         return element
 
     # JS bridge operations ------------------------------------------------------------
+
+    def _call_speak(self, expression: str) -> None:
+        text, _ = self._parse_function_call(expression, "speak")
+        self._ensure_app()
+        if self._app:
+            self._app.speak(text)
 
     def _call_apply_theme(self, expression: str) -> None:
         theme, options = self._parse_function_call(expression, "applyTheme")
