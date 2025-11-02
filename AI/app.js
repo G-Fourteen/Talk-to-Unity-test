@@ -29,6 +29,7 @@ let systemPrompt = '';
 let recognition = null;
 let isMuted = true;
 let hasMicPermission = false;
+let isMicIgnored = false;
 let currentHeroUrl = '';
 let pendingHeroUrl = '';
 let currentTheme = 'dark';
@@ -316,6 +317,7 @@ async function setMutedState(muted, { announce = false } = {}) {
         isMuted = muted;
         updateMuteIndicator();
         if (muted) {
+            setMicIgnoredState(false);
             setCircleState(userCircle, {
                 listening: false,
                 speaking: false,
@@ -325,10 +327,11 @@ async function setMutedState(muted, { announce = false } = {}) {
                 speak('Microphone muted.');
             }
         } else {
-            setCircleState(userCircle, {
-                listening: true,
-                label: 'Listening for your voice'
-            });
+            if (synth.speaking) {
+                setMicIgnoredState(true);
+            } else {
+                setMicIgnoredState(false);
+            }
             if (announce) {
                 speak('Microphone unmuted.');
             }
@@ -339,6 +342,7 @@ async function setMutedState(muted, { announce = false } = {}) {
     if (muted) {
         if (!isMuted) {
             isMuted = true;
+            setMicIgnoredState(false);
             setCircleState(userCircle, {
                 listening: false,
                 speaking: false,
@@ -351,6 +355,7 @@ async function setMutedState(muted, { announce = false } = {}) {
                 console.error('Failed to stop recognition:', error);
             }
         } else {
+            setMicIgnoredState(false);
             updateMuteIndicator();
         }
 
@@ -373,10 +378,11 @@ async function setMutedState(muted, { announce = false } = {}) {
     }
 
     if (!isMuted) {
-        setCircleState(userCircle, {
-            listening: true,
-            label: 'Listening for your voice'
-        });
+        if (synth.speaking || isMicIgnored) {
+            setMicIgnoredState(true);
+        } else {
+            setMicIgnoredState(false);
+        }
         updateMuteIndicator();
 
         if (announce) {
@@ -386,10 +392,11 @@ async function setMutedState(muted, { announce = false } = {}) {
     }
 
     isMuted = false;
-    setCircleState(userCircle, {
-        listening: true,
-        label: 'Listening for your voice'
-    });
+    if (synth.speaking) {
+        setMicIgnoredState(true);
+    } else {
+        setMicIgnoredState(false);
+    }
     updateMuteIndicator();
 
     try {
@@ -471,6 +478,34 @@ function setCircleState(circle, { speaking = false, listening = false, error = f
     }
 }
 
+function setMicIgnoredState(ignored) {
+    const normalizedIgnored = Boolean(ignored);
+
+    if (isMicIgnored === normalizedIgnored) {
+        return;
+    }
+
+    isMicIgnored = normalizedIgnored;
+
+    if (isMuted) {
+        return;
+    }
+
+    if (isMicIgnored) {
+        setCircleState(userCircle, {
+            listening: false,
+            speaking: false,
+            label: 'Listening paused while Unity speaks'
+        });
+    } else {
+        setCircleState(userCircle, {
+            listening: true,
+            speaking: false,
+            label: 'Listening for your voice'
+        });
+    }
+}
+
 async function loadSystemPrompt() {
     try {
         const response = await fetch(resolveAssetPath('ai-instruct.txt'));
@@ -500,6 +535,13 @@ function setupSpeechRecognition() {
 
     recognition.onstart = () => {
         console.log('Voice recognition started.');
+        if (isMicIgnored) {
+            setCircleState(userCircle, {
+                listening: false,
+                speaking: false
+            });
+            return;
+        }
         setCircleState(userCircle, {
             listening: true,
             label: 'Listening for your voice'
@@ -507,6 +549,13 @@ function setupSpeechRecognition() {
     };
 
     recognition.onaudiostart = () => {
+        if (isMicIgnored) {
+            setCircleState(userCircle, {
+                listening: false,
+                speaking: false
+            });
+            return;
+        }
         setCircleState(userCircle, {
             listening: true,
             label: 'Listening for your voice'
@@ -514,6 +563,13 @@ function setupSpeechRecognition() {
     };
 
     recognition.onspeechstart = () => {
+        if (isMicIgnored) {
+            setCircleState(userCircle, {
+                listening: false,
+                speaking: false
+            });
+            return;
+        }
         setCircleState(userCircle, {
             speaking: true,
             listening: true,
@@ -522,6 +578,13 @@ function setupSpeechRecognition() {
     };
 
     recognition.onspeechend = () => {
+        if (isMicIgnored) {
+            setCircleState(userCircle, {
+                listening: false,
+                speaking: false
+            });
+            return;
+        }
         setCircleState(userCircle, {
             listening: true,
             speaking: false,
@@ -534,7 +597,7 @@ function setupSpeechRecognition() {
         setCircleState(userCircle, {
             listening: false,
             speaking: false,
-            label: isMuted ? 'Microphone is muted' : 'Listening for your voice'
+            label: isMuted ? 'Microphone is muted' : isMicIgnored ? '' : 'Listening for your voice'
         });
 
         if (recognitionRestartTimeout) {
@@ -570,6 +633,14 @@ function setupSpeechRecognition() {
     };
 
     recognition.onresult = (event) => {
+        if (isMicIgnored) {
+            console.log('Ignoring microphone input while Unity is speaking.');
+            setCircleState(userCircle, {
+                listening: false,
+                speaking: false
+            });
+            return;
+        }
         const transcript = event.results[event.results.length - 1][0].transcript.trim();
         console.log('User said:', transcript);
 
@@ -1188,19 +1259,24 @@ function speak(text) {
 
     utterance.onstart = () => {
         console.log('AI is speaking...');
+        setMicIgnoredState(true);
         setCircleState(aiCircle, {
             speaking: true,
             label: 'Unity is speaking'
         });
     };
 
-    utterance.onend = () => {
+    const handleSpeechComplete = () => {
         console.log('AI finished speaking.');
+        setMicIgnoredState(false);
         setCircleState(aiCircle, {
             speaking: false,
             label: 'Unity is idle'
         });
     };
+
+    utterance.onend = handleSpeechComplete;
+    utterance.onerror = handleSpeechComplete;
 
     synth.speak(utterance);
 }
