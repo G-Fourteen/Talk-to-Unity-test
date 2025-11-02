@@ -34,6 +34,7 @@ let pendingHeroUrl = '';
 let currentTheme = 'dark';
 let recognitionRestartTimeout = null;
 let isSpeaking = false;
+let recognitionIgnoreUntil = 0;
 let appStarted = false;
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const synth = window.speechSynthesis;
@@ -515,6 +516,10 @@ function setupSpeechRecognition() {
     };
 
     recognition.onspeechstart = () => {
+        if (shouldIgnoreMicrophoneInput()) {
+            return;
+        }
+
         setCircleState(userCircle, {
             speaking: true,
             listening: true,
@@ -523,6 +528,10 @@ function setupSpeechRecognition() {
     };
 
     recognition.onspeechend = () => {
+        if (shouldIgnoreMicrophoneInput()) {
+            return;
+        }
+
         setCircleState(userCircle, {
             listening: true,
             speaking: false,
@@ -567,6 +576,12 @@ function setupSpeechRecognition() {
 
     recognition.onresult = (event) => {
         const transcript = event.results[event.results.length - 1][0].transcript.trim();
+
+        if (shouldIgnoreMicrophoneInput()) {
+            console.log('Ignoring microphone input while Unity is speaking:', transcript);
+            return;
+        }
+
         console.log('User said:', transcript);
 
         setCircleState(userCircle, {
@@ -590,6 +605,18 @@ function setupSpeechRecognition() {
             label: `Microphone error: ${event.error}`
         });
     };
+}
+
+function shouldIgnoreMicrophoneInput() {
+    if (isSpeaking) {
+        return true;
+    }
+
+    if (recognitionIgnoreUntil > Date.now()) {
+        return true;
+    }
+
+    return false;
 }
 
 async function initializeVoiceControl() {
@@ -1162,6 +1189,7 @@ function speak(text) {
             speaking: false,
             label: 'Unity is idle'
         });
+        recognitionIgnoreUntil = Date.now() + 250;
     }
 
     const sanitizedText = sanitizeForSpeech(text);
@@ -1182,17 +1210,10 @@ function speak(text) {
         console.warn('UK English female voice not found, using default.');
     }
 
-    let wasRecognitionActiveBeforeSpeaking = false;
-
     utterance.onstart = () => {
         console.log('AI is speaking...');
         isSpeaking = true;
-        if (recognition && !isMuted) {
-            wasRecognitionActiveBeforeSpeaking = true;
-            recognition.stop();
-        } else {
-            wasRecognitionActiveBeforeSpeaking = false;
-        }
+        recognitionIgnoreUntil = Date.now() + 200;
         setCircleState(aiCircle, {
             speaking: true,
             label: 'Unity is speaking'
@@ -1202,13 +1223,11 @@ function speak(text) {
     utterance.onend = () => {
         console.log('AI finished speaking.');
         isSpeaking = false;
+        recognitionIgnoreUntil = Date.now() + 600;
         setCircleState(aiCircle, {
             speaking: false,
             label: 'Unity is idle'
         });
-        if (recognition && wasRecognitionActiveBeforeSpeaking) {
-            recognition.start();
-        }
     };
 
     synth.speak(utterance);
