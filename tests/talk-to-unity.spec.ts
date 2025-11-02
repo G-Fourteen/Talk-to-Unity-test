@@ -225,12 +225,12 @@ test('user can launch Talk to Unity and receive AI response with image and speec
 
     await expect(launchButton).toBeEnabled();
 
-    await Promise.all([
-        page.waitForNavigation({ url: /\/AI\/index\.html$/i }),
-        launchButton.click()
-    ]);
+    // Click launch button (single-page app mode - no navigation)
+    await launchButton.click();
 
-    await expect(page).toHaveURL(/\/AI\/index\.html$/i);
+    // Wait for landing to hide and app to show
+    await expect(page.locator('#landing')).toBeHidden();
+    await expect(page.locator('#app-root')).toBeVisible();
 
     await page.waitForFunction(() => Boolean(window.__unityTestHooks?.isAppReady()));
 
